@@ -19,7 +19,7 @@ SERVER_IP = "192.168.123.14"
 SERVER_PORT = 9292
 
 # Maximum duration of the task (seconds):
-TIMEOUT = 180
+TIMEOUT = 10  # 180
 
 # Minimum control loop duration:
 MIN_LOOP_DURATION = 0.1
@@ -90,6 +90,9 @@ aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
 arucoParams = cv2.aruco.DetectorParameters()
 arucoParams.markerBorderBits = 1
 
+RECORD = True
+frames = []
+
 # ----------------- CONTROLLER -----------------
 
 # We create a TCP socket to talk to the Jetson at IP 192.168.123.14, which runs our walking policy:
@@ -116,6 +119,9 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         # capture camera frame:
         ret, frame = cam.read()
 
+        if RECORD:
+            frames.append(frame)
+
         # --------------- CHANGE THIS PART ---------------
 
         # --- Detect markers ---
@@ -135,3 +141,8 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         # --- Send control to the walking policy ---
 
         send(s, x_velocity, y_velocity, r_velocity)
+
+    if RECORD:
+        import pickle as pkl
+        with open("frames.pkl", 'wb') as f:
+            pkl.dump(frames, f)

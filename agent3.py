@@ -111,9 +111,7 @@ class CommandServer:
 
 
 class Agent():
-    def __init__(self, path, server=False, port=9292, joystick=False):
-
-        self.joystick = joystick
+    def __init__(self, path, server=False, port=9292):
         self.server = server
         if server:
             self.command_server = CommandServer(port)
