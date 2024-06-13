@@ -87,7 +87,7 @@ pipeline.start(config)
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
 
 
-arucoParams = cv2.aruco.DetectorParameters()
+arucoParams = cv2.aruco.DetectorParameters_create()
 arucoParams.markerBorderBits = 1
 
 RECORD = False
@@ -142,7 +142,10 @@ try:
             # --- Detect markers ---
 
             # Markers detection:
-            (detected_corners, detected_ids, rejected) = cv2.aruco.detectMarkers(color_frame, aruco_dict, parameters=arucoParams)
+            grey_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
+            (detected_corners, detected_ids, rejected) = cv2.aruco.detectMarkers(grey_frame, aruco_dict, parameters=arucoParams)
+
+            print(f"Tags in FOV: {detected_ids}")
 
             # --- Compute control ---
 
