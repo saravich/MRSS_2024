@@ -11,6 +11,9 @@ import cv2
 import pyrealsense2 as rs
 
 
+CONNECT_SERVER = True  # False for local tests, True for deployment
+
+
 # ----------- DO NOT CHANGE THIS PART -----------
 
 # The deploy.py script runs on the Jetson Nano at IP 192.168.123.14
@@ -38,7 +41,8 @@ def send(sock, x, y, r):
     :param r: yaw rate (between -1 and 1)
     """
     data = struct.pack('<hfff', code, x, y, r)
-    sock.sendall(data)
+    if sock is not None:
+        sock.sendall(data)
 
 
 # Fisheye camera (distortion_model: narrow_stereo):
@@ -81,6 +85,8 @@ pipeline.start(config)
 # ----------- DO NOT CHANGE THIS PART -----------
 
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
+
+
 arucoParams = cv2.aruco.DetectorParameters()
 arucoParams.markerBorderBits = 1
 
@@ -94,8 +100,12 @@ try:
 
     print("Client connecting...")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.connect((SERVER_IP, SERVER_PORT))
-        print("Connected.")
+
+        if CONNECT_SERVER:
+            s.connect((SERVER_IP, SERVER_PORT))
+            print("Connected.")
+        else:
+            s = None
 
         code = 1  # 1 for velocity commands
 
