@@ -111,7 +111,8 @@ class CommandServer:
 
 
 class Agent():
-    def __init__(self, path, server=False, port=9292):
+    def __init__(self, path, server=False, port=9292, joystick=True):
+        self.joystick = joystick
         self.server = server
         if server:
             self.command_server = CommandServer(port)
@@ -191,7 +192,7 @@ class Agent():
         rx = struct.unpack('f', struct.pack('4B', *self.state.wirelessRemote[8:12]))
         # ry = struct.unpack('f', struct.pack('4B', *self.state.wirelessRemote[12:16]))
 
-        if self.server:
+        if self.server and not self.joystick:
             x, y, r = self.command_server.get()
             # clip out-of-bounds values:
             if abs(x) > 1:

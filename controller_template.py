@@ -5,8 +5,10 @@ This is the template of a python controller script to use with a server-enabled 
 import struct
 import socket
 import time
-import cv2
+
 import numpy as np
+import cv2
+import pyrealsense2 as rs
 
 
 # ----------- DO NOT CHANGE THIS PART -----------
@@ -19,7 +21,7 @@ SERVER_IP = "192.168.123.14"
 SERVER_PORT = 9292
 
 # Maximum duration of the task (seconds):
-TIMEOUT = 10  # 180
+TIMEOUT = 180
 
 # Minimum control loop duration:
 MIN_LOOP_DURATION = 0.1
@@ -41,48 +43,40 @@ def send(sock, x, y, r):
 
 # Fisheye camera (distortion_model: narrow_stereo):
 
-image_width = 928
-image_height = 800
-
-cam = cv2.VideoCapture(1)
-cam.set(cv2.CAP_PROP_BUFFERSIZE, 2)
-cam.set(cv2.CAP_PROP_FRAME_WIDTH, image_width)
-cam.set(cv2.CAP_PROP_FRAME_HEIGHT, image_height)
+image_width = 640
+image_height = 480
 
 # --------- CHANGE THIS PART (optional) ---------
 
-# These un-distortion parameters are very rough (found by hand).
-# You can get better parameters by doing a proper calibration via OpenCV.
-# You need a chessboard picture for this purpose...
-# https://docs.opencv.org/4.x/dc/dbb/tutorial_py_calibration.html
+pipeline = rs.pipeline()
+config = rs.config()
 
-c_x = 928 / 2
-c_y = 800 / 2
-k_1 = -1.515
-k_2 = 1.215
-p_1 = 0
-p_2 = 0
-k_3 = 0.0
+# Get device product line for setting a supporting resolution
+pipeline_wrapper = rs.pipeline_wrapper(pipeline)
+pipeline_profile = config.resolve(pipeline_wrapper)
+device = pipeline_profile.get_device()
+device_product_line = str(device.get_info(rs.camera_info.product_line))
 
-f = 2.42
-f_x = c_x * f
-f_y = c_y * f
+found_rgb = False
+for s in device.sensors:
+    if s.get_info(rs.camera_info.name) == 'RGB Camera':
+        found_rgb = True
+        break
+if not found_rgb:
+    print("Could not find a depth camera with color sensor")
+    exit(0)
 
-camera_matrix = np.array([f_x, 0.0, c_x,
-                          0.0, f_y, c_y,
-                          0.0, 0.0, 1.0]).reshape(3, 3)
+# Depht available FPS: up to 90Hz
+config.enable_stream(rs.stream.depth, image_width, image_height, rs.format.z16, 30)
+# RGB available FPS: 30Hz
+config.enable_stream(rs.stream.color, image_width, image_height, rs.format.bgr8, 30)
+# # Accelerometer available FPS: {63, 250}Hz
+# config.enable_stream(rs.stream.accel, rs.format.motion_xyz32f, 250)
+# # Gyroscope available FPS: {200,400}Hz
+# config.enable_stream(rs.stream.gyro, rs.format.motion_xyz32f, 200)
 
-distortion_coefficients = np.array([k_1,
-                                    k_2,
-                                    p_1,
-                                    p_2,
-                                    k_3]).reshape(5, 1)
-
-new_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(camera_matrix,
-                                                       distortion_coefficients,
-                                                       (image_width, image_height),
-                                                       1,
-                                                       (image_width, image_height))
+# Start streaming
+pipeline.start(config)
 
 # ----------- DO NOT CHANGE THIS PART -----------
 
@@ -90,59 +84,72 @@ aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
 arucoParams = cv2.aruco.DetectorParameters()
 arucoParams.markerBorderBits = 1
 
-RECORD = True
-frames = []
+RECORD = False
+history = []
 
 # ----------------- CONTROLLER -----------------
 
-# We create a TCP socket to talk to the Jetson at IP 192.168.123.14, which runs our walking policy:
+try:
+    # We create a TCP socket to talk to the Jetson at IP 192.168.123.14, which runs our walking policy:
 
-print("Client connecting...")
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    s.connect((SERVER_IP, SERVER_PORT))
-    print("Connected.")
+    print("Client connecting...")
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.connect((SERVER_IP, SERVER_PORT))
+        print("Connected.")
 
-    code = 1  # 1 for velocity commands
+        code = 1  # 1 for velocity commands
 
-    task_complete = False
-    start_time = time.time()
-    previous_time_stamp = start_time
+        task_complete = False
+        start_time = time.time()
+        previous_time_stamp = start_time
 
-    # main control loop:
-    while not task_complete and not time.time() - start_time > TIMEOUT:
+        # main control loop:
+        while not task_complete and not time.time() - start_time > TIMEOUT:
 
-        # avoid busy loops:
-        now = time.time()
-        if now - previous_time_stamp < MIN_LOOP_DURATION:
-            time.sleep(MIN_LOOP_DURATION - (now - previous_time_stamp))
+            # avoid busy loops:
+            now = time.time()
+            if now - previous_time_stamp < MIN_LOOP_DURATION:
+                time.sleep(MIN_LOOP_DURATION - (now - previous_time_stamp))
 
-        # capture camera frame:
-        ret, frame = cam.read()
+            # ---------- CHANGE THIS PART (optional) ----------
+
+            # Wait for a coherent pair of frames: depth and color
+            frames = pipeline.wait_for_frames()
+            depth_frame = frames.get_depth_frame()
+            color_frame = frames.get_color_frame()
+            if not depth_frame or not color_frame:
+                continue
+
+            if RECORD:
+                history.append((depth_frame, color_frame))
+
+            # Convert images to numpy arrays
+            depth_image = np.asanyarray(depth_frame.get_data())
+            color_image = np.asanyarray(color_frame.get_data())
+
+            # --------------- CHANGE THIS PART ---------------
+
+            # --- Detect markers ---
+
+            # Markers detection:
+            (detected_corners, detected_ids, rejected) = cv2.aruco.detectMarkers(color_frame, aruco_dict, parameters=arucoParams)
+
+            # --- Compute control ---
+
+            x_velocity = 0.0
+            y_velocity = 0.0
+            r_velocity = 0.0
+
+            # --- Send control to the walking policy ---
+
+            send(s, x_velocity, y_velocity, r_velocity)
+
+        print(f"End of main loop.")
 
         if RECORD:
-            frames.append(frame)
-
-        # --------------- CHANGE THIS PART ---------------
-
-        # --- Detect markers ---
-
-        # Un-distort fisheye image:
-        dst = cv2.undistort(dst, camera_matrix, distortion_coefficients, None, new_camera_matrix)
-
-        # Markers detection:
-        (detected_corners, detected_ids, rejected) = cv2.aruco.detectMarkers(dst, aruco_dict, parameters=arucoParams)
-
-        # --- Compute control ---
-
-        x_velocity = 0.0
-        y_velocity = 0.0
-        r_velocity = 0.0
-
-        # --- Send control to the walking policy ---
-
-        send(s, x_velocity, y_velocity, r_velocity)
-
-    if RECORD:
-        import pickle as pkl
-        with open("frames.pkl", 'wb') as f:
-            pkl.dump(frames, f)
+            import pickle as pkl
+            with open("frames.pkl", 'wb') as f:
+                pkl.dump(frames, f)
+finally:
+    # Stop streaming
+    pipeline.stop()
