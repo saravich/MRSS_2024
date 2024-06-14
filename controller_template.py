@@ -197,6 +197,7 @@ class Fronted():
         self.map_landmarks["6_1"] = [self.map_landmarks["6"][0] + apriltag_size_half, self.map_landmarks["6"][0]]
         self.map_landmarks["6_2"] = [self.map_landmarks["6"][0] - apriltag_size_half, self.map_landmarks["6"][0]]
 
+
     def smoother(self, data, window_size):
         """ Mean smoothing """
         return np.convolve(data, np.ones(window_size) / window_size, mode='valid')
@@ -688,7 +689,7 @@ class Controller:
 # ------- STATE ESTIMATOR
 class ParticleFilter:
 
-    def __init__(self, x_range, y_range):
+    def __init__(self, x_range, y_range, map_landmarks):
 
         self.mouseX = 0
         self.mouseY = 0
@@ -705,8 +706,13 @@ class ParticleFilter:
         self.landmarks = []
         self.weights = np.ones(self.particles_num) / self.particles_num
         self.seen_landmarks = np.array([])
-        self.landmarks_dict = {'id': [1, 2, 3, 4, 5, 6],
-                               'pose': np.array([[0, 117], [90, 0], [261, 0], [351, 117], [261, 235], [90, 235]]),
+        self.landmarks_dict = {'id': [1, 11, 12, 2, 21, 22, 3, 31, 32, 4, 41, 42, 5, 51, 52, 6, 61, 62],
+                               'pose': np.array([[-58, 0], map_landmarks["1_1"], map_landmarks["1_2"],
+                                                 [32, 117.5], map_landmarks["2_1"], map_landmarks["2_2"],
+                                                 [203, 117.5], map_landmarks["3_1"], map_landmarks["3_2"],
+                                                 [293, 0], map_landmarks["4_1"], map_landmarks["4_2"],
+                                                 [203, -117.5], map_landmarks["5_1"], map_landmarks["5_2"],
+                                                 [32, -117.5], map_landmarks["6_1"], map_landmarks["6_2"]]),
                                }
 
         tr_model_mean = 0.0001
