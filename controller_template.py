@@ -1063,17 +1063,17 @@ class StateMachine:
     def __init__(self):
         self.state = 0
 
-    def state_transition():
+    def state_transition(self):
         if self.state < 3:
             self.state +=1
         else:
             self.state = -1
         self.print_state()
     
-    def print_state():
+    def print_state(self):
         print(f"Current state: {self.states[self.state]}")
 
-    def reset():
+    def reset(self):
         self.state = -1
     
 
