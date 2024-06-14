@@ -683,6 +683,151 @@ class Controller:
         u_v = self.controller_vel(error_x, dt)
         return u_v, u_theta
 
+# ------- STATE ESTIMATOR
+class ParticleFilter:
+
+    def __init__(self, x_range, y_range):
+
+        self.mouseX = 0
+        self.mouseY = 0
+        # self.prev_x = -1
+        # self.prev_y = -1
+
+        self.x_range = np.array(x_range)
+        self.y_range = np.array(y_range)
+
+        self.particles_num = 400
+        self.particles = np.empty((self.particles_num, 3))  # [x, y, theta]
+        self.create_uniform_particles()
+
+        self.landmarks = []
+        self.weights = np.ones(self.particles_num) / self.particles_num
+        self.seen_landmarks = np.array([])
+        self.landmarks_dict = {'id': [1, 2, 3, 4, 5, 6],
+                               'pose': np.array([[0, 117], [90, 0], [261, 0], [351, 117], [261, 235], [90, 235]]),
+                               }
+
+        tr_model_mean = 0.0000001
+        tr_model_var = 1
+        tr_model = [tr_model_mean, tr_model_var]
+
+        rot_model_mean = 0.0000001
+        rot_model_var = 0.01
+        rot_model = [rot_model_mean, rot_model_var]
+        self.rotation_model = rot_model
+        self.translation_model = tr_model
+
+    def particle_filter_update(self, heading_vel, angular_vel, measured_distances, measured_ids, dt=0.1):
+
+        direction = angular_vel * dt
+        # direction = -direction + np.pi if direction > 0 else -np.pi - direction
+
+        # distance = np.linalg.norm(np.array([[self.prev_x, self.prev_y]]) - np.array([[x, y]]), axis=1)
+        distance = heading_vel * dt
+        # mouse movement noise is implemented in "distance" which is to be included in "u"
+        # velocity of the mouse which is considered to be a vector composed of "distance" and "direction"
+
+        u = np.array([direction, distance])
+
+        # predicting particles position with respect to the last movement of the mouse
+        self.predict(u)
+
+        self.landmark_detected(measured_ids)
+        self.update(z=measured_distances, R=50)
+
+        indexes = self.systematic_resample()
+        self.resample_from_index(indexes)
+
+        best_particles_idx = self.weights.argsort()[:int(0.4 * len(self.particles))]
+        best_particle = self.particle_distance(self.particles[best_particles_idx])
+        self.X, self.Y, self.Theta = best_particle[0], best_particle[1], best_particle[2]
+
+    def particle_distance(self, particles):
+        dist = np.zeros(len(particles))
+        for i, particle in enumerate(particles):
+            dist[i] = sum(np.sqrt((particle[0] - particles[:, 0]) ** 2 + (particle[1] - particles[:, 1]) ** 2))
+        return particles[np.argmin(dist)]
+
+    def create_uniform_particles(self):
+        # self.particles[:, 0] = uniform(self.x_range[0], self.x_range[1], size=len(self.particles))
+        # self.particles[:, 1] = uniform(self.y_range[0], self.y_range[1], size=len(self.particles))
+        # print(len(self.particles))
+        self.particles[:, 0] = uniform(self.x_range[0], self.x_range[1], size=len(self.particles))
+        self.particles[:, 1] = uniform(self.y_range[0], self.y_range[1], size=len(self.particles))
+        self.particles[:, 2] = uniform(-np.pi, np.pi, size=self.particles_num)
+
+    # def predict(self, d, dtheta, dt=1):
+    #     self.particles[:, 0] += np.cos(u[0]) * ((u[1] * dt + np.random.normal(0.1, 5, self.particles_num)))
+    #     self.particles[:, 1] += np.sin(u[0]) * ((u[1] * dt + np.random.normal(0.1, 5, self.particles_num)))
+    #
+    #     self.particles[:, 0] += (d * np.cos(yaw_setpoint) + np.random.normal(self.translation_model[0], self.translation_model[1],
+    #                                                   self.num_of_particles))
+    #     self.particles[:, 1] += (d * np.sin(yaw_setpoint)+ np.random.normal(self.translation_model[0], self.translation_model[1],
+    #                                                   self.num_of_particles))
+
+    def predict(self, u, dt=1, yaw_setpoint=0):
+        direction, distance = u
+        std_dev = 0.2
+        # self.particles[:, 0] += distance * np.cos(direction) + np.random.normal(0, std_dev, self.particles_num)
+        # self.particles[:, 1] += distance * np.sin(direction) + np.random.normal(0, std_dev, self.particles_num)
+        # self.particles[:, 2] += direction + np.random.normal(0, std_dev, self.particles_num)
+
+        self.particles[:, 0] += (distance * np.cos(yaw_setpoint) + np.random.normal(self.translation_model[0],
+                                                                                    self.translation_model[1],
+                                                                                    self.particles_num))
+        self.particles[:, 1] += (distance * np.sin(yaw_setpoint) + np.random.normal(self.translation_model[0],
+                                                                                    self.translation_model[1],
+                                                                                    self.particles_num))
+        self.particles[:, 2] += direction + np.random.normal(self.rotation_model[0], self.rotation_model[1],
+                                                             self.particles_num)
+
+        # Ensure particles stay within bounds
+        self.particles[:, 0] = np.clip(self.particles[:, 0], self.x_range[0], self.x_range[1])
+        self.particles[:, 1] = np.clip(self.particles[:, 1], self.y_range[0], self.y_range[1])
+        self.particles[:, 2] = (self.particles[:, 2] + np.pi) % (2 * np.pi) - np.pi
+
+    def update(self, z, R):
+        self.weights.fill(1.)
+        for i, landmark in enumerate(self.landmarks):
+            distance = np.power(
+                (self.particles[:, 0] - landmark[0]) ** 2 + (self.particles[:, 1] - landmark[1]) ** 2, 0.5)
+            R = distance * 0.5
+            self.weights *= scipy.stats.norm(distance, R).pdf(z[i])
+
+        self.weights += 1.e-300  # avoid round-off to zero
+        self.weights /= sum(self.weights)
+
+    def systematic_resample(self):
+        N = len(self.weights)
+        positions = (np.arange(N) + np.random.random()) / N
+
+        indexes = np.zeros(N, 'i')
+        cumulative_sum = np.cumsum(self.weights)
+        i, j = 0, 0
+        while i < N and j < N:
+            if positions[i] < cumulative_sum[j]:
+                indexes[i] = j
+                i += 1
+            else:
+                j += 1
+
+        return indexes
+
+    def resample_from_index(self, indexes):
+        self.particles[:] = self.particles[indexes]
+        self.weights[:] = self.weights[indexes]
+        self.weights /= np.sum(self.weights)
+
+    def landmark_detected(self, landmark_ids):
+        self.landmarks = []
+        for i in range(len(landmark_ids)):
+            # self.landmarks.append(self.landmarks_dict['pose'][landmark_ids[i]])
+            index = self.landmarks_dict['id'].index(landmark_ids[i])
+            # Retrieve the pose using the index
+            pose = self.landmarks_dict['pose'][index]
+            self.landmarks.append(pose)
+
+
 # ------ PLANNER CLASS
 
 class Planner:
@@ -732,6 +877,8 @@ history = []
 
 frontend = Fronted()
 # state_estimator = StateEstimator()
+state_estimator = ParticleFilter([-58, 253], [-117.5, 117.5])
+
 # planner = Planner()
 controller = Controller()
 
@@ -788,7 +935,11 @@ try:
             if state_machine.state == StateMachine.states['LOCALIZE']:
                 ######### PASS res_frontend['measurements'] to state estimation
                 # localize the robot
-                pass
+                state_estimator.particle_filter_update(heading_vel=5,
+                                                       angular_vel=-1,
+                                                       measured_distances=[100, 20],
+                                                       measured_ids=[1, 3])
+                print("Estimated Pose: {}, {}, {}".format(state_estimator.X, state_estimator.Y, state_estimator.Theta))
 
             if state_machine.state == StateMachine.states['PLAN']:
                 ######### PASS the results of state estimation to planer (in global frame)
