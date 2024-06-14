@@ -44,17 +44,7 @@ def send(sock, x, y, r):
         sock.sendall(data)
 
 # ----------
-# https://github.com/m-lundberg/simple-pid/blob/master/simple_pid/pid.py#L99
 
-def _clamp(value, limits):
-    lower, upper = limits
-    if value is None:
-        return None
-    elif (upper is not None) and (value > upper):
-        return upper
-    elif (lower is not None) and (value < lower):
-        return lower
-    return value
 
 # ---------- HELPING FUNCTIONS
 
@@ -255,6 +245,7 @@ class Frontend():
 
         # compute the average depth
         average_depth = np.mean(depth_image_bottom_crop)
+        print(f"avg. depth : {average_depth}")
 
         # compute the median value of the cropped depth image
         depth_bottom_crop_median = np.median(depth_image_bottom_crop)
@@ -285,6 +276,9 @@ class Frontend():
             if len(self.normalized_depth_directions) > 5:
                 depth_center = self.smoother(self.normalized_depth_directions, 5)
                 self.normalized_depth_directions.pop(0)
+
+                # mean to remove list
+                depth_center = sum(depth_center) / len(depth_center) 
                 
                 return depth_center, average_depth, depth_strip_clone
             return None, average_depth, depth_strip_clone
@@ -375,6 +369,19 @@ class Frontend():
         self.pipeline.stop()
 
 # ------ PID CLASS
+
+# https://github.com/m-lundberg/simple-pid/blob/master/simple_pid/pid.py#L99
+
+def _clamp(value, limits):
+    lower, upper = limits
+    print(f"{value}, {limits}, {lower}, {upper}")
+    if value is None:
+        return None
+    elif (upper is not None) and (value > upper):
+        return upper
+    elif (lower is not None) and (value < lower):
+        return lower
+    return value
 
 class PID(object):
     """A simple PID controller."""
