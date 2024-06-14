@@ -10,9 +10,10 @@ import numpy as np
 import cv2
 import pyrealsense2 as rs
 from time import sleep
+from numpy.random import uniform
+import scipy
 
 CONNECT_SERVER = False  # False for local tests, True for deployment
-
 
 # ----------- DO NOT CHANGE THIS PART -----------
 
@@ -44,6 +45,7 @@ def send(sock, x, y, r):
     if sock is not None:
         sock.sendall(data)
 
+
 # ----------
 # https://github.com/m-lundberg/simple-pid/blob/master/simple_pid/pid.py#L99
 
@@ -56,6 +58,7 @@ def _clamp(value, limits):
     elif (lower is not None) and (value < lower):
         return lower
     return value
+
 
 # ---------- HELPING FUNCTIONS
 
@@ -71,6 +74,7 @@ def spin(s, speed):
     """
     send(s, 0., 0., speed)
 
+
 def go_back(s, a=-1):
     """
     Move the robot backwards.
@@ -82,6 +86,7 @@ def go_back(s, a=-1):
     a = np.clip(a, -1, 0)
     send(s, a, 0., 0.)
 
+
 def move(s, x, r):
     """
     Move the robot forward.
@@ -90,7 +95,6 @@ def move(s, x, r):
     :param r: yaw rate (between -1 and 1)
     """
     send(s, x, 0., r)
-
 
 
 # ------ FRONTEND CLASS
@@ -105,8 +109,8 @@ class Fronted():
         "3": [2.03, 1.175],
         "4": [2.93, 0.],
         "5": [2.03, -1.175],
-        "6": [0.32, -1.175] 
-        } # TODO whats the unit of the values?
+        "6": [0.32, -1.175]
+    }  # TODO whats the unit of the values?
 
     def __init__(self):
         # Fisheye camera (distortion_model: narrow_stereo):
@@ -118,7 +122,6 @@ class Fronted():
 
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
 
-
         self.arucoParams = cv2.aruco.DetectorParameters_create()
         self.arucoParams.markerBorderBits = 1
 
@@ -128,10 +131,9 @@ class Fronted():
         self.config = rs.config()
 
         # Get device product line for setting a supporting resolution
-        pipeline_wrapper = rs.pipeline_wrapper(self.pipeline)
-        pipeline_profile = self.config.resolve(pipeline_wrapper)
-        device = pipeline_profile.get_device()
-        device_product_line = str(device.get_info(rs.camera_info.product_line))
+        self.pipeline_wrapper = rs.pipeline_wrapper(self.pipeline)
+        self.pipeline_profile = self.config.resolve(self.pipeline_wrapper)
+        device = self.pipeline_profile.get_device()
 
         found_rgb = False
         for s in device.sensors:
@@ -143,24 +145,24 @@ class Fronted():
             exit(0)
 
         # Depht available FPS: up to 90Hz
-        self.config.enable_stream(rs.stream.depth, self.image_width, image_height, rs.format.z16, 30)
+        self.config.enable_stream(rs.stream.depth, self.image_width, self.image_height, rs.format.z16, 30)
         # RGB available FPS: 30Hz
-        self.config.enable_stream(rs.stream.color, self.image_width, image_height, rs.format.bgr8, 30)
+        self.config.enable_stream(rs.stream.color, self.image_width, self.image_height, rs.format.bgr8, 30)
         # # Accelerometer available FPS: {63, 250}Hz
         # config.enable_stream(rs.stream.accel, rs.format.motion_xyz32f, 250)
         # # Gyroscope available FPS: {200,400}Hz
         # config.enable_stream(rs.stream.gyro, rs.format.motion_xyz32f, 200)
 
         # Start streaming
-        profile = pipeline.start(self.config)
+        self.profile = self.pipeline.start(self.config)
 
         # Getting the depth sensor's depth scale (see rs-align example for explanation)
-        depth_sensor = profile.get_device().first_depth_sensor()
+        depth_sensor = self.profile.get_device().first_depth_sensor()
         self.depth_scale = depth_sensor.get_depth_scale()
 
         # We will be removing the background of objects more than
         #  clipping_distance_in_meters meters away
-        clipping_distance_in_meters = 2.5 # 3 meter
+        clipping_distance_in_meters = 2.5  # 3 meter
         self.clipping_distance = clipping_distance_in_meters / self.depth_scale
 
         # Create an align object
@@ -175,29 +177,29 @@ class Fronted():
         self.normalized_depth_directions = []
 
     def map_augmenter(self):
-        apriltag_size_half = 0.1
+        apriltag_size_half = 0.05
         # augment the map with pseudo landmarks that are 10 cm away from the real landmarks
-        self.map_landmarks["1_1"] = [map_landmarks["1"][0],  map_landmarks["1"][0] + apriltag_size_half]
-        self.map_landmarks["1_2"] = [map_landmarks["1"][0],  map_landmarks["1"][0] - apriltag_size_half]
+        self.map_landmarks["1_1"] = [self.map_landmarks["1"][0], self.map_landmarks["1"][0] + apriltag_size_half]
+        self.map_landmarks["1_2"] = [self.map_landmarks["1"][0], self.map_landmarks["1"][0] - apriltag_size_half]
 
-        self.map_landmarks["2_1"] = [map_landmarks["2"][0] + apriltag_size_half,  map_landmarks["2"][0]]
-        self.map_landmarks["2_2"] = [map_landmarks["2"][0] - apriltag_size_half,  map_landmarks["2"][0]]
+        self.map_landmarks["2_1"] = [self.map_landmarks["2"][0] + apriltag_size_half, self.map_landmarks["2"][0]]
+        self.map_landmarks["2_2"] = [self.map_landmarks["2"][0] - apriltag_size_half, self.map_landmarks["2"][0]]
 
-        self.map_landmarks["3_1"] = [map_landmarks["3"][0] + apriltag_size_half,  map_landmarks["3"][0]]
-        self.map_landmarks["3_2"] = [map_landmarks["3"][0] - apriltag_size_half,  map_landmarks["3"][0]]
+        self.map_landmarks["3_1"] = [self.map_landmarks["3"][0] + apriltag_size_half, self.map_landmarks["3"][0]]
+        self.map_landmarks["3_2"] = [self.map_landmarks["3"][0] - apriltag_size_half, self.map_landmarks["3"][0]]
 
-        self.map_landmarks["4_1"] = [map_landmarks["4"][0],  map_landmarks["4"][0] + apriltag_size_half]
-        self.map_landmarks["4_2"] = [map_landmarks["4"][0],  map_landmarks["4"][0] - apriltag_size_half]
+        self.map_landmarks["4_1"] = [self.map_landmarks["4"][0], self.map_landmarks["4"][0] + apriltag_size_half]
+        self.map_landmarks["4_2"] = [self.map_landmarks["4"][0], self.map_landmarks["4"][0] - apriltag_size_half]
 
-        self.map_landmarks["5_1"] = [map_landmarks["5"][0] + apriltag_size_half,  map_landmarks["5"][0]]
-        self.map_landmarks["5_2"] = [map_landmarks["5"][0] - apriltag_size_half,  map_landmarks["5"][0]]
+        self.map_landmarks["5_1"] = [self.map_landmarks["5"][0] + apriltag_size_half, self.map_landmarks["5"][0]]
+        self.map_landmarks["5_2"] = [self.map_landmarks["5"][0] - apriltag_size_half, self.map_landmarks["5"][0]]
 
-        self.map_landmarks["6_1"] = [map_landmarks["6"][0] + apriltag_size_half,  map_landmarks["6"][0]]
-        self.map_landmarks["6_2"] = [map_landmarks["6"][0] - apriltag_size_half,  map_landmarks["6"][0]]
+        self.map_landmarks["6_1"] = [self.map_landmarks["6"][0] + apriltag_size_half, self.map_landmarks["6"][0]]
+        self.map_landmarks["6_2"] = [self.map_landmarks["6"][0] - apriltag_size_half, self.map_landmarks["6"][0]]
 
     def smoother(self, data, window_size):
         """ Mean smoothing """
-        return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
+        return np.convolve(data, np.ones(window_size) / window_size, mode='valid')
 
     def meters2scale(self, meters) -> float:
         return meters / self.depth_scale
@@ -217,15 +219,11 @@ class Fronted():
         if not self.depth_frame or not self.color_frame:
             return False
         return True
-        
-    
+
     def run(self, history=None):
         # read data
-        if self.read() is False:
-            return
-
-        if history is not None:
-            history.append((self.depth_frame, self.color_frame))
+        # if self.read() is False:
+        #     return
 
         # extract safe direction
         error_direction, average_depth, depth_strip = self.extract_direction_and_depth()
@@ -234,9 +232,6 @@ class Fronted():
         detected_corners, detected_ids, _ = self.get_april_tags()
 
         measurements = self.landmarks2map(detected_ids, detected_corners, depth_strip)
-
-        if detected_ids is not None:
-            self.landmarks2map(detected_ids, detected_corners)
 
         return {
             "error_direction": error_direction,
@@ -268,25 +263,25 @@ class Fronted():
         # threshold the depth image according to the meadian value
         depth_strip[depth_strip < depth_bottom_crop_median] = 0.
         depth_strip[depth_strip >= depth_bottom_crop_median] = 1.
-        
+
         # find the segments of contiguous ones
         segments = self.find_segments(depth_strip)
 
         # find the segment with the maximum length
         if segments:
             segment = max(segments, key=self.segment_length)
-            depth_center = self.midpoint(segment) 
+            depth_center = self.midpoint(segment)
             # center the depth_center in the depth image
             depth_center -= self.image_width / 2.
             # normalize the depth_center
             depth_center /= ((self.image_width / 2.) / 2.)
 
             self.normalized_depth_directions.append(depth_center)
-            
+
             if len(self.normalized_depth_directions) > 5:
-                depth_center = self.smoother(self.normalized_depth_directions, 5)
+                depth_center = self.smoother(self.normalized_depth_directions, 5)[0]
                 self.normalized_depth_directions.pop(0)
-                
+
                 return depth_center, average_depth, depth_strip_clone
             return None, average_depth, depth_strip_clone
         else:
@@ -300,10 +295,11 @@ class Fronted():
     def get_april_tags(self) -> (np.array, np.array, np.array):
         # Convert images to numpy arrays
         color_image = np.asanyarray(self.color_frame.get_data())
-        
+
         # Markersangular_output_cmd detection:
         grey_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
-        (detected_corners, detected_ids, rejected) = cv2.aruco.detectMarkers(grey_frame, self.aruco_dict, parameters=self.arucoParams)
+        (detected_corners, detected_ids, rejected) = cv2.aruco.detectMarkers(grey_frame, self.aruco_dict,
+                                                                             parameters=self.arucoParams)
 
         return detected_corners, detected_ids, rejected
 
@@ -328,10 +324,10 @@ class Fronted():
     def midpoint(self, segment):
         """Function to calculate the midpoint of a segment"""
         return (segment[0] + segment[1]) / 2
-    
+
     def landmarks2map(self, detected_ids, detected_corners, depth_strip) -> dict:
         angular_output_cmd = 0.0
-        linear_vel=0
+        linear_vel = 0
         measurements = {
             "1": None,
             "2": None,
@@ -352,7 +348,11 @@ class Fronted():
             "5_2": None,
             "6_2": None
         }
+        print(f"Tags in FOV: {detected_ids}")
+        if detected_ids is None:
+            return measurements
         for i, id_ in enumerate(detected_ids):
+            id_ = str(id_[0])
             if not id_ in self.map_landmarks:
                 continue
             # on the depth strip get the x coordinates of the corners and the center of the landmark
@@ -372,25 +372,26 @@ class Fronted():
     def stop(self):
         self.pipeline.stop()
 
+
 # ------ PID CLASS
 
 class PID(object):
     """A simple PID controller."""
 
     def __init__(
-        self,
-        Kp=1.0,
-        Ki=0.0,
-        Kd=0.0,
-        setpoint=0,
-        sample_time=0.01,
-        output_limits=(None, None),
-        auto_mode=True,
-        proportional_on_measurement=False,
-        differential_on_measurement=True,
-        error_map=None,
-        time_fn=None,
-        starting_output=0.0,
+            self,
+            Kp=1.0,
+            Ki=0.0,
+            Kd=0.0,
+            setpoint=0,
+            sample_time=0.01,
+            output_limits=(None, None),
+            auto_mode=True,
+            proportional_on_measurement=False,
+            differential_on_measurement=True,
+            error_map=None,
+            time_fn=None,
+            starting_output=0.0,
     ):
         """
         Initialize a new PID controller.
@@ -613,6 +614,7 @@ class PID(object):
     def reset(self):
         self._last_input = None
 
+
 # ------ CONTROLLER CLASS
 
 class Controller:
@@ -621,9 +623,9 @@ class Controller:
         # define the PID controller
         self.controller_theta = PID(
             Kp=1.0, Ki=0.05, Kd=0.05,
-            setpoint=0, #  image_width / 2,
+            setpoint=0,  # image_width / 2,
             sample_time=MIN_LOOP_DURATION,
-            output_limits = [-1,1],
+            output_limits=[-1, 1],
             auto_mode=True,
             proportional_on_measurement=False,
             differential_on_measurement=False,
@@ -632,11 +634,11 @@ class Controller:
             starting_output=0
         )
 
-        self.controller_vel=PID(
+        self.controller_vel = PID(
             Kp=1.0, Ki=0.01, Kd=0.08,
             setpoint=-0.5,
             sample_time=MIN_LOOP_DURATION,
-            output_limits = [-1,1],
+            output_limits=[-1, 1],
             auto_mode=True,
             proportional_on_measurement=False,
             differential_on_measurement=False,
@@ -644,19 +646,18 @@ class Controller:
             time_fn=None,
             starting_output=0
         )
-    
-    def backward(self,s, error_x, error_theta, dt):
+
+    def backward(self, s, error_x, error_theta, dt):
         self.controller_vel.setpoint = 0.7
         u_v = self.controller_vel(error_x, dt)
         u_theta = self.controller_theta(error_theta, dt)
         send(s, u_v, 0., u_theta)
 
-    def forward(self,s, error_x, error_theta, dt):
+    def forward(self, s, error_x, error_theta, dt):
         self.controller_vel.setpoint = -0.5
         u_v = self.controller_vel(-error_x, dt)
         u_theta = self.controller_theta(error_theta, dt)
         send(s, u_v, 0., u_theta)
-
 
     def setpoints(self, set_x=None, set_theta=None):
         if set_x is not None:
@@ -664,7 +665,7 @@ class Controller:
         if set_theta is not None:
             self.controller_theta.setpoint = set_theta
 
-    def happy_moves():
+    def happy_moves(self, s):
         send(s, 0., 0., -0.7)
         sleep(2.)
         send(s, 0., 0., 0.7)
@@ -678,10 +679,11 @@ class Controller:
         send(s, 0., 0., 0.)
 
     def run(self, error_x, error_theta, dt):
-        self.controller_theta.setpoint = error_theta
-        u_theta = self.controller_theta(theta, dt)
+        # self.controller_theta.setpoint = error_theta
+        u_theta = self.controller_theta(error_theta, dt)
         u_v = self.controller_vel(error_x, dt)
         return u_v, u_theta
+
 
 # ------- STATE ESTIMATOR
 class ParticleFilter:
@@ -707,15 +709,19 @@ class ParticleFilter:
                                'pose': np.array([[0, 117], [90, 0], [261, 0], [351, 117], [261, 235], [90, 235]]),
                                }
 
-        tr_model_mean = 0.0000001
+        tr_model_mean = 0.0001
         tr_model_var = 1
         tr_model = [tr_model_mean, tr_model_var]
 
-        rot_model_mean = 0.0000001
+        rot_model_mean = 0.0001
         rot_model_var = 0.01
         rot_model = [rot_model_mean, rot_model_var]
         self.rotation_model = rot_model
         self.translation_model = tr_model
+
+    def add_landmark(self, pose):
+        self.landmarks_dict['id'] = np.append(self.landmarks_dict['id'], len(self.landmarks_dict['id']) + 1)
+        self.landmarks_dict['pose'] = np.vstack((self.landmarks_dict['pose'], pose))
 
     def particle_filter_update(self, heading_vel, angular_vel, measured_distances, measured_ids, dt=0.1):
 
@@ -833,14 +839,14 @@ class ParticleFilter:
 class Planner:
 
     def __init__(self,
-                 reso = 0.05,
+                 reso=0.05,
                  robot_radius=0.4,
-                 max_p = 10., 
-                 KP = 5.0,
-                 ETA = 100., 
-                 AREA_WIDTH=3.51, 
+                 max_p=10.,
+                 KP=5.0,
+                 ETA=100.,
+                 AREA_WIDTH=3.51,
                  AREA_HEIGHT=2.34
-                ):
+                 ):
         """
         initialize the planner
 
@@ -855,8 +861,8 @@ class Planner:
         """
 
         self.KP = KP  # attractive potential gain
-        self.ETA = ETA # repulsive potential gain
-        self.AREA_WIDTH = AREA_WIDTH # potential area width [m] 350 w 234 [h]
+        self.ETA = ETA  # repulsive potential gain
+        self.AREA_WIDTH = AREA_WIDTH  # potential area width [m] 350 w 234 [h]
         self.AREA_HEIGHT = AREA_HEIGHT
         # the number of previous positions used to check oscillations
         self.OSCILLATIONS_DETECTION_LENGTH = 3
@@ -877,20 +883,19 @@ class Planner:
 
         # generate the potential field
         self.potential_field_planning()
-    
-    def run(self, x, y): #-> (float, float):
-        
+
+    def run(self, x, y):  # -> (float, float):
+
         if self.oscillations_detection(s, y):
             return None, None
-        
+
         p, x, y, theta = self.get_potential(x, y)
 
-
-        # was getting 
+        # was getting
         p = 1 if p > 1 else p
         p = -1 if p < -1 else p
         return p, theta
-        
+
     def new_obstacle(self, ox, oy):
 
         self.set_obstacle(ox, oy)
@@ -908,10 +913,10 @@ class Planner:
 
     def calc_potential_field(self, gx, gy, ox, oy, rr):
 
-        minx = 0#min(min(ox), sx, gx) - self.AREA_WIDTH / 2.0
-        miny = 0#min(min(oy), sy, gy) - self.AREA_WIDTH / 2.0
-        maxx = self.AREA_WIDTH#max(max(ox), sx, gx) + self.AREA_WIDTH / 2.0
-        maxy = self.AREA_HEIGHT#max(max(oy), sy, gy) + self.AREA_WIDTH / 2.0
+        minx = 0  # min(min(ox), sx, gx) - self.AREA_WIDTH / 2.0
+        miny = 0  # min(min(oy), sy, gy) - self.AREA_WIDTH / 2.0
+        maxx = self.AREA_WIDTH  # max(max(ox), sx, gx) + self.AREA_WIDTH / 2.0
+        maxy = self.AREA_HEIGHT  # max(max(oy), sy, gy) + self.AREA_WIDTH / 2.0
         xw = int(round((maxx - minx) / self.reso))
         yw = int(round((maxy - miny) / self.reso))
 
@@ -930,10 +935,10 @@ class Planner:
                 pmap[ix][iy] = uf
 
         return pmap, minx, miny
-    
+
     def calc_attractive_potential(self, x, y, gx, gy):
         return 0.5 * self.KP * np.hypot(x - gx, y - gy)
-    
+
     def calc_repulsive_potential(self, x, y, ox, oy, rr):
         # search nearest obstacledq
         minid = -1
@@ -955,22 +960,23 @@ class Planner:
             return 0.5 * self.ETA * (1.0 / dq - 1.0 / rr) ** 2
         else:
             return 0.0
-        
+
     def get_motion_model(self):
         # dx, dy
         motion = [[1, 0],
-              [0, 1],
-              [-1, 0],
-              [0, -1],
-              [-1, -1],
-              [-1, 1],
-              [1, -1],
-              [1, 1]]
-        
-        self.theta_options = [0., np.pi/2., np.pi, -np.pi/2., -3*np.pi/4., 3*np.pi/4., -1*np.pi/4., np.pi/4]
+                  [0, 1],
+                  [-1, 0],
+                  [0, -1],
+                  [-1, -1],
+                  [-1, 1],
+                  [1, -1],
+                  [1, 1]]
+
+        self.theta_options = [0., np.pi / 2., np.pi, -np.pi / 2., -3 * np.pi / 4., 3 * np.pi / 4., -1 * np.pi / 4.,
+                              np.pi / 4]
 
         return motion
-    
+
     def oscillations_detection(self, ix, iy):
         self.previous_ids.append((ix, iy))
 
@@ -991,16 +997,15 @@ class Planner:
     def potential_field_planning(self):
 
         # calc potential field
-        self.pmap, self.minx, self.miny = self.calc_potential_field(self.gx, self.gy, self.ox, self.oy, 
+        self.pmap, self.minx, self.miny = self.calc_potential_field(self.gx, self.gy, self.ox, self.oy,
                                                                     self.rr)
 
         return self.pmap, self.minx, self.miny
-    
+
     def get_potential(self, x, y):
 
-        ix = int(round(x/self.reso))
-        iy = int(round(y/self.reso))
-
+        ix = int(round(x / self.reso))
+        iy = int(round(y / self.reso))
 
         minp = float("inf")
         minix, miniy, mini = -1, -1, 0
@@ -1025,8 +1030,8 @@ class Planner:
         y = miniy * self.reso
 
         theta = self.theta_options[mini]
-        return p/self.max_p, x, y, theta
-    
+        return p / self.max_p, x, y, theta
+
     def get_potential_index(self, ix, iy):
 
         minp = float("inf")
@@ -1059,23 +1064,29 @@ class StateMachine:
         'PLAN': 2,
         'MOVE': 3,
     }
+    states2str = {
+        -1: 'STOP',
+        0: 'EXPLORE',
+        1: 'LOCALIZE',
+        2: 'PLAN',
+        3: 'MOVE',
+    }
 
     def __init__(self):
         self.state = 0
 
-    def state_transition():
+    def state_transition(self):
         if self.state < 3:
-            self.state +=1
+            self.state += 1
         else:
             self.state = -1
         self.print_state()
-    
-    def print_state():
-        print(f"Current state: {self.states[self.state]}")
 
-    def reset():
+    def print_state(self):
+        print(f"Current state: {self.states2str[self.state]}")
+
+    def reset(self):
         self.state = -1
-    
 
 
 # ----------- DO NOT CHANGE THIS PART -----------
@@ -1124,19 +1135,21 @@ try:
             if dt < MIN_LOOP_DURATION:
                 time.sleep(MIN_LOOP_DURATION - dt)
 
+            frontend.read()
             res_frontend = frontend.run(history)
-            
+
+            # print(res_frontend)
+
             # stop and go back if too close with an obstacle
             if res_frontend['average_depth'] < min_obs_distance:
                 controller.backward(s, res_frontend['average_depth'], 0, dt)
                 continue
-            
+
             if res_frontend['error_direction'] is not None:
                 error_theta = res_frontend['error_direction']
 
-
             if state_machine.state == StateMachine.states['EXPLORE']:
-                if not (res_frontend['measurements']==None).all():
+                if not any(res_frontend['measurements'].values()):
                     state_machine.state_transition()
                 # we cannot localize properly, then explore
                 controller.forward(s, res_frontend['average_depth'], error_theta, dt)
@@ -1162,13 +1175,8 @@ try:
                 # from here go back to state == -1 with state transition
                 # and controller.happy_moves()
 
-
         print(f"End of main loop.")
 
-        if RECORD:
-            import pickle as pkl
-            with open("frames.pkl", 'wb') as f:
-                pkl.dump(frames, f)
 finally:
     # Stop streaming
     frontend.stop()
