@@ -245,7 +245,7 @@ class Frontend():
 
         # compute the average depth
         average_depth = np.mean(depth_image_bottom_crop)
-        print(f"avg. depth : {average_depth}")
+        # print(f"avg. depth : {average_depth}")
 
         # compute the median value of the cropped depth image
         depth_bottom_crop_median = np.median(depth_image_bottom_crop)
@@ -374,7 +374,7 @@ class Frontend():
 
 def _clamp(value, limits):
     lower, upper = limits
-    print(f"{value}, {limits}, {lower}, {upper}")
+    # print(f"{value}, {limits}, {lower}, {upper}")
     if value is None:
         return None
     elif (upper is not None) and (value > upper):
@@ -673,18 +673,18 @@ class Controller:
         if set_theta is not None:
             self.controller_theta.setpoint = set_theta
 
-    def happy_moves():
-        send(s, 0., 0., -0.7)
-        time.sleep(2.)
-        send(s, 0., 0., 0.7)
-        time.sleep(2.)
-        send(s, 0., 0., -0.7)
-        time.sleep(2.)
-        send(s, 0., 0., 0.7)
-        time.sleep(2.)
-        send(s, 0., 0., -0.7)
-        time.sleep(2.)
-        send(s, 0., 0., 0.)
+    # def happy_moves():
+    #     send(s, 0., 0., -0.7)
+    #     time.sleep(2.)
+    #     send(s, 0., 0., 0.7)
+    #     time.sleep(2.)
+    #     send(s, 0., 0., -0.7)
+    #     time.sleep(2.)
+    #     send(s, 0., 0., 0.7)
+    #     time.sleep(2.)
+    #     send(s, 0., 0., -0.7)
+    #     time.sleep(2.)
+    #     send(s, 0., 0., 0.)
 
     def run(self, error_x, error_theta, dt):
         self.controller_theta.setpoint = error_theta
@@ -768,8 +768,9 @@ try:
 
         # main control loop:
         while not task_complete and not time.time() - start_time > TIMEOUT:
-            error_theta = 0.
-            error_x = 0.
+            error_theta = 0.0
+            error_x = 0.0
+
             # avoid busy loops:
             now = time.time()
             dt = now - previous_time_stamp
