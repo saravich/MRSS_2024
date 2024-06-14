@@ -99,6 +99,14 @@ class Fronted():
     """
     This class hanlde all the RGB and depth data
     """
+    map_landmarks = {
+        "1": [-0.58, 0.],
+        "2": [0.32, 1.175],
+        "3": [2.03, 1.175],
+        "4": [2.93, 0.],
+        "5": [2.03, -1.175],
+        "6": [0.32, -1.175] 
+        } # TODO whats the unit of the values?
 
     def __init__(self):
         # Fisheye camera (distortion_model: narrow_stereo):
@@ -166,6 +174,26 @@ class Fronted():
 
         self.normalized_depth_directions = []
 
+    def map_augmenter(self):
+        apriltag_size_half = 0.1
+        # augment the map with pseudo landmarks that are 10 cm away from the real landmarks
+        self.map_landmarks["1_1"] = [map_landmarks["1"][0],  map_landmarks["1"][0] + apriltag_size_half]
+        self.map_landmarks["1_2"] = [map_landmarks["1"][0],  map_landmarks["1"][0] - apriltag_size_half]
+
+        self.map_landmarks["2_1"] = [map_landmarks["2"][0] + apriltag_size_half,  map_landmarks["2"][0]]
+        self.map_landmarks["2_2"] = [map_landmarks["2"][0] - apriltag_size_half,  map_landmarks["2"][0]]
+
+        self.map_landmarks["3_1"] = [map_landmarks["3"][0] + apriltag_size_half,  map_landmarks["3"][0]]
+        self.map_landmarks["3_2"] = [map_landmarks["3"][0] - apriltag_size_half,  map_landmarks["3"][0]]
+
+        self.map_landmarks["4_1"] = [map_landmarks["4"][0],  map_landmarks["4"][0] + apriltag_size_half]
+        self.map_landmarks["4_2"] = [map_landmarks["4"][0],  map_landmarks["4"][0] - apriltag_size_half]
+
+        self.map_landmarks["5_1"] = [map_landmarks["5"][0] + apriltag_size_half,  map_landmarks["5"][0]]
+        self.map_landmarks["5_2"] = [map_landmarks["5"][0] - apriltag_size_half,  map_landmarks["5"][0]]
+
+        self.map_landmarks["6_1"] = [map_landmarks["6"][0] + apriltag_size_half,  map_landmarks["6"][0]]
+        self.map_landmarks["6_2"] = [map_landmarks["6"][0] - apriltag_size_half,  map_landmarks["6"][0]]
 
     def smoother(self, data, window_size):
         """ Mean smoothing """
@@ -200,16 +228,20 @@ class Fronted():
             history.append((self.depth_frame, self.color_frame))
 
         # extract safe direction
-        error_direction, average_depth = self.extract_direction_and_depth()
+        error_direction, average_depth, depth_strip = self.extract_direction_and_depth()
 
         # extract april tags
         detected_corners, detected_ids, _ = self.get_april_tags()
 
+        measurements = self.landmarks2map(detected_ids, detected_corners, depth_strip)
+
+        if detected_ids is not None:
+            self.landmarks2map(detected_ids, detected_corners)
+
         return {
             "error_direction": error_direction,
             "average_depth": average_depth,
-            "detected_corners": detected_corners,
-            "detected_ids": detected_ids
+            "measurements": measurements
         }
 
     def extract_direction_and_depth(self) -> (float, float):
@@ -231,6 +263,7 @@ class Fronted():
         # squeeze the depth image to a 1D array averaging the values of the horizontal strip
         # in this way we do not care much about artifacts in the depth image
         depth_strip = np.mean(depth_image_bottom_crop, axis=0)
+        depth_strip_clone = depth_strip.copy()
 
         # threshold the depth image according to the meadian value
         depth_strip[depth_strip < depth_bottom_crop_median] = 0.
@@ -254,15 +287,15 @@ class Fronted():
                 depth_center = self.smoother(self.normalized_depth_directions, 5)
                 self.normalized_depth_directions.pop(0)
                 
-                return depth_center, average_depth
-            return None, average_depth
+                return depth_center, average_depth, depth_strip_clone
+            return None, average_depth, depth_strip_clone
         else:
             if len(self.normalized_depth_directions) > 5:
                 return 0., average_depth
-            return None, average_depth
+            return None, average_depth, depth_strip_clone
 
         if np.isnan(depth_center):
-            return 0., average_depth
+            return 0., average_depth, depth_strip_clone
 
     def get_april_tags(self) -> (np.array, np.array, np.array):
         # Convert images to numpy arrays
@@ -273,7 +306,6 @@ class Fronted():
         (detected_corners, detected_ids, rejected) = cv2.aruco.detectMarkers(grey_frame, self.aruco_dict, parameters=self.arucoParams)
 
         return detected_corners, detected_ids, rejected
-
 
     def find_segments(self, arr):
         """Function to find segments of contiguous ones"""
@@ -296,7 +328,49 @@ class Fronted():
     def midpoint(self, segment):
         """Function to calculate the midpoint of a segment"""
         return (segment[0] + segment[1]) / 2
+    
+    def landmarks2map(self, detected_ids, detected_corners, depth_strip) -> dict:
+        angular_output_cmd = 0.0
+        linear_vel=0
+        measurements = {
+            "1": None,
+            "2": None,
+            "3": None,
+            "4": None,
+            "5": None,
+            "6": None,
+            "1_1": None,
+            "2_1": None,
+            "3_1": None,
+            "4_1": None,
+            "5_1": None,
+            "6_1": None,
+            "1_2": None,
+            "2_2": None,
+            "3_2": None,
+            "4_2": None,
+            "5_2": None,
+            "6_2": None
+        }
+        for i, id_ in enumerate(detected_ids):
+            if not id_ in self.map_landmarks:
+                continue
+            # on the depth strip get the x coordinates of the corners and the center of the landmark
+            landmark_center = detected_corners[i][0][0] + (detected_corners[i][0][2] - detected_corners[i][0][0]) / 2.
+            landmark_center = landmark_center.astype(int)
+            x = landmark_center[0]
+            measurements[id_] = depth_strip[x]
 
+            # ugmented
+            x_1 = detected_corners[i][0][2][0].astype(int)
+            measurements[id_ + "_1"] = depth_strip[x_1]
+
+            x_2 = detected_corners[i][0][0][0].astype(int)
+            measurements[id_ + "_2"] = depth_strip[x_2]
+        return measurements
+
+    def stop(self):
+        self.pipeline.stop()
 
 # ------ PID CLASS
 
@@ -571,15 +645,18 @@ class Controller:
             starting_output=0
         )
     
-    def backward(self,s, error_x):
-        self.controller_theta.setpoint = 0.7
+    def backward(self,s, error_x, error_theta, dt):
+        self.controller_vel.setpoint = 0.7
         u_v = self.controller_vel(error_x, dt)
-        send(s, u_v, 0., 0.)
+        u_theta = self.controller_theta(error_theta, dt)
+        send(s, u_v, 0., u_theta)
 
-    def forward(self,s, error_x):
-        self.controller_theta.setpoint = -0.7
+    def forward(self,s, error_x, error_theta, dt):
+        self.controller_vel.setpoint = -0.5
         u_v = self.controller_vel(-error_x, dt)
-        send(s, u_v, 0., 0.)
+        u_theta = self.controller_theta(error_theta, dt)
+        send(s, u_v, 0., u_theta)
+
 
     def setpoints(self, set_x=None, set_theta=None):
         if set_x is not None:
@@ -587,6 +664,18 @@ class Controller:
         if set_theta is not None:
             self.controller_theta.setpoint = set_theta
 
+    def happy_moves():
+        send(s, 0., 0., -0.7)
+        sleep(2.)
+        send(s, 0., 0., 0.7)
+        sleep(2.)
+        send(s, 0., 0., -0.7)
+        sleep(2.)
+        send(s, 0., 0., 0.7)
+        sleep(2.)
+        send(s, 0., 0., -0.7)
+        sleep(2.)
+        send(s, 0., 0., 0.)
 
     def run(self, error_x, error_theta, dt):
         self.controller_theta.setpoint = error_theta
@@ -601,8 +690,37 @@ class Planner:
     def __init__(self):
         pass
 
-    def run(self):
+    def run(self, x, y) -> (float, float):
         pass
+
+
+# ------ STATE MACHINE
+
+class StateMachine:
+    states = {
+        'STOP': -1,
+        'EXPLORE': 0,
+        'LOCALIZE': 1,
+        'PLAN': 2,
+        'MOVE': 3,
+    }
+
+    def __init__(self):
+        self.state = 0
+
+    def state_transition():
+        if self.state < 3:
+            self.state +=1
+        else:
+            self.state = -1
+        self.print_state()
+    
+    def print_state():
+        print(f"Current state: {self.states[self.state]}")
+
+    def reset():
+        self.state = -1
+    
 
 
 # ----------- DO NOT CHANGE THIS PART -----------
@@ -611,6 +729,13 @@ RECORD = False
 history = []
 
 # ----------------- CONTROLLER -----------------
+
+frontend = Fronted()
+# state_estimator = StateEstimator()
+# planner = Planner()
+controller = Controller()
+
+state_machine = StateMachine()
 
 try:
     # We create a TCP socket to talk to the Jetson at IP 192.168.123.14, which runs our walking policy:
@@ -630,11 +755,6 @@ try:
         start_time = time.time()
         previous_time_stamp = start_time
 
-        frontend = Fronted()
-        # state_estimator = StateEstimator()
-        # planner = Planner()
-        controller = Controller()
-
         min_obs_distance = frontend.meters2scale(MIN_OBS_DISTANCE)
 
         # main control loop:
@@ -651,71 +771,36 @@ try:
             
             # stop and go back if too close with an obstacle
             if res_frontend['average_depth'] < min_obs_distance:
-                controller.backward(s, res_frontend['average_depth'])
+                controller.backward(s, res_frontend['average_depth'], 0, dt)
                 continue
             
             if res_frontend['error_direction'] is not None:
                 error_theta = res_frontend['error_direction']
 
-            controller.forward(s, 0.5)
-            
-            continue
 
-            # --------------- CHANGE THIS PART ---------------
+            if state_machine.state == StateMachine.states['EXPLORE']:
+                if not (res_frontend['measurements']==None).all():
+                    state_machine.state_transition()
+                # we cannot localize properly, then explore
+                controller.forward(s, res_frontend['average_depth'], error_theta, dt)
+                continue
 
-            # --- Detect markers ---
+            if state_machine.state == StateMachine.states['LOCALIZE']:
+                ######### PASS res_frontend['measurements'] to state estimation
+                # localize the robot
+                pass
 
-            
-            angular_output_cmd = 0.0
-            linear_vel=0
-            if detected_ids is not None:
-                for i, id_ in enumerate(detected_ids):
-                    # TODO DEBUG
-                    if id_!=9:
-                        continue
-                    # estimate depth as a median value of the values of the corners
-                    int_corners = detected_corners[i][0].astype(int)
-                    depth_estimate_mm = np.median(depth_image[int_corners[:, 1], int_corners[:, 0]]) 
-                    depth_estimate = depth_estimate_mm / 1000.
-                    landmark_center = detected_corners[i][0][0] + (detected_corners[i][0][2] - detected_corners[i][0][0]) / 2.
-                    landmark_center = landmark_center.astype(int)
-                    x = landmark_center[0]
+            if state_machine.state == StateMachine.states['PLAN']:
+                ######### PASS the results of state estimation to planer (in global frame)
+                # plan the path
+                pass
 
-                    angular_output_cmd = controller(x, dt)
-                    linear_vel=controller_vel(-depth_estimate,dt)
-                    print(depth_estimate)
+            if state_machine.state == StateMachine.states['MOVE']:
+                # move the robot
+                pass
+                # from here go back to state == -1 with state transition
+                # and controller.happy_moves()
 
-            #--- Compute control ---
-
-            # x_velocity = 0.0
-            # y_velocity = 0.0
-            # r_velocity = 0.0
-
-            x_velocity = linear_vel
-            y_velocity = 0.0
-            r_velocity = angular_output_cmd
-
-            # --- Send control to the walking policy ---
-
-            send(s, x_velocity, y_velocity, r_velocity)
-
-            if not CONNECT_SERVER:
-                # Render images:
-                #   depth align to color on left
-                #   depth on right
-                depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
-                images = np.hstack((bg_removed, depth_colormap))
-
-                cv2.namedWindow('Align Example', cv2.WINDOW_NORMAL)
-                cv2.imshow('Align Example', images)
-                cv2.imshow('img', img)
-
-                key = cv2.waitKey(1)
-                # Press esc or 'q' to close the image window
-                if key & 0xFF == ord('q') or key == 27:
-                    cv2.destroyAllWindows()
-                    break
-        
 
         print(f"End of main loop.")
 
@@ -725,4 +810,4 @@ try:
                 pkl.dump(frames, f)
 finally:
     # Stop streaming
-    pipeline.stop()
+    frontend.stop()
