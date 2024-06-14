@@ -9,7 +9,7 @@ import time
 import numpy as np
 import cv2
 import pyrealsense2 as rs
-
+from time import sleep
 
 CONNECT_SERVER = False  # False for local tests, True for deployment
 
