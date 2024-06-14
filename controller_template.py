@@ -94,7 +94,7 @@ def move(s, x, r):
 
 # ------ FRONTEND CLASS
 
-class Fronted():
+class Frontend():
     """
     This class hanlde all the RGB and depth data
     """
@@ -142,16 +142,16 @@ class Fronted():
             exit(0)
 
         # Depht available FPS: up to 90Hz
-        self.config.enable_stream(rs.stream.depth, self.image_width, image_height, rs.format.z16, 30)
+        self.config.enable_stream(rs.stream.depth, self.image_width, self.image_height, rs.format.z16, 30)
         # RGB available FPS: 30Hz
-        self.config.enable_stream(rs.stream.color, self.image_width, image_height, rs.format.bgr8, 30)
+        self.config.enable_stream(rs.stream.color, self.image_width, self.image_height, rs.format.bgr8, 30)
         # # Accelerometer available FPS: {63, 250}Hz
         # config.enable_stream(rs.stream.accel, rs.format.motion_xyz32f, 250)
         # # Gyroscope available FPS: {200,400}Hz
         # config.enable_stream(rs.stream.gyro, rs.format.motion_xyz32f, 200)
 
         # Start streaming
-        profile = pipeline.start(self.config)
+        profile = self.pipeline.start(self.config)
 
         # Getting the depth sensor's depth scale (see rs-align example for explanation)
         depth_sensor = profile.get_device().first_depth_sensor()
@@ -729,7 +729,7 @@ history = []
 
 # ----------------- CONTROLLER -----------------
 
-frontend = Fronted()
+frontend = Frontend()
 # state_estimator = StateEstimator()
 # planner = Planner()
 controller = Controller()
