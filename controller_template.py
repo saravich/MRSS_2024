@@ -351,21 +351,22 @@ class Frontend():
             "5_2": None,
             "6_2": None
         }
-        for i, id_ in enumerate(detected_ids):
-            if not id_ in self.map_landmarks:
-                continue
-            # on the depth strip get the x coordinates of the corners and the center of the landmark
-            landmark_center = detected_corners[i][0][0] + (detected_corners[i][0][2] - detected_corners[i][0][0]) / 2.
-            landmark_center = landmark_center.astype(int)
-            x = landmark_center[0]
-            measurements[id_] = depth_strip[x]
+        if detected_ids:
+            for i, id_ in enumerate(detected_ids):
+                if not id_ in self.map_landmarks:
+                    continue
+                # on the depth strip get the x coordinates of the corners and the center of the landmark
+                landmark_center = detected_corners[i][0][0] + (detected_corners[i][0][2] - detected_corners[i][0][0]) / 2.
+                landmark_center = landmark_center.astype(int)
+                x = landmark_center[0]
+                measurements[id_] = depth_strip[x]
 
-            # ugmented
-            x_1 = detected_corners[i][0][2][0].astype(int)
-            measurements[id_ + "_1"] = depth_strip[x_1]
+                # ugmented
+                x_1 = detected_corners[i][0][2][0].astype(int)
+                measurements[id_ + "_1"] = depth_strip[x_1]
 
-            x_2 = detected_corners[i][0][0][0].astype(int)
-            measurements[id_ + "_2"] = depth_strip[x_2]
+                x_2 = detected_corners[i][0][0][0].astype(int)
+                measurements[id_ + "_2"] = depth_strip[x_2]
         return measurements
 
     def stop(self):
