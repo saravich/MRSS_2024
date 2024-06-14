@@ -351,6 +351,7 @@ class Frontend():
             "5_2": None,
             "6_2": None
         }
+
         if detected_ids:
             for i, id_ in enumerate(detected_ids):
                 if not id_ in self.map_landmarks:
@@ -367,6 +368,7 @@ class Frontend():
 
                 x_2 = detected_corners[i][0][0][0].astype(int)
                 measurements[id_ + "_2"] = depth_strip[x_2]
+
         return measurements
 
     def stop(self):
@@ -779,7 +781,7 @@ try:
 
 
             if state_machine.state == StateMachine.states['EXPLORE']:
-                if not (res_frontend['measurements']==None).all():
+                if not all(m is None for m in res_frontend['measurements'].values()):
                     state_machine.state_transition()
                 # we cannot localize properly, then explore
                 controller.forward(s, res_frontend['average_depth'], error_theta, dt)
