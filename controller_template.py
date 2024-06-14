@@ -657,17 +657,9 @@ try:
             if res_frontend['error_direction'] is not None:
                 error_theta = res_frontend['error_direction']
 
+            controller.forward(s, 0.5)
             
-
-
-
-            angular_output_cmd = controller(normalized_depth_center, dt)
-            print(f"Angular output: {angular_output_cmd}")
-
-            linear_vel=controller_vel(-depth_center, dt)
-
-            move_forward(s, 0.5, angular_output_cmd)
-            # continue
+            continue
 
             # --------------- CHANGE THIS PART ---------------
 
