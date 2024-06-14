@@ -831,12 +831,222 @@ class ParticleFilter:
 # ------ PLANNER CLASS
 
 class Planner:
-    
-    def __init__(self):
-        pass
 
-    def run(self, x, y) -> (float, float):
-        pass
+    def __init__(self,
+                 reso = 0.05,
+                 robot_radius=0.4,
+                 max_p = 10., 
+                 KP = 5.0,
+                 ETA = 100., 
+                 AREA_WIDTH=3.51, 
+                 AREA_HEIGHT=2.34
+                ):
+        """
+        initialize the planner
+
+        params:
+            - reso: float, the resolution of the grid for the potential field.  Default = 0.01
+            - robot_radius: float, radius of the robot in meters, control size boundaries around obstacles.  Default=0.4
+            - max_p: float, scaling factor that converts potential to speed.  Default=10
+            - KP: float, attractive potential gain.  Default=5.0
+            - ETA: float, repulsive potential gain.  Dfault=100.
+            - AREA_WIDTH:, float, width of map. Default=3.51
+            - AREA_HEIGHT: float, height of map.  Default=2.34
+        """
+
+        self.KP = KP  # attractive potential gain
+        self.ETA = ETA # repulsive potential gain
+        self.AREA_WIDTH = AREA_WIDTH # potential area width [m] 350 w 234 [h]
+        self.AREA_HEIGHT = AREA_HEIGHT
+        # the number of previous positions used to check oscillations
+        self.OSCILLATIONS_DETECTION_LENGTH = 3
+
+        self.reso = reso
+        self.rr = robot_radius
+        self.max_p = max_p
+
+        self.previous_ids = []
+
+        self.ox = []
+        self.oy = []
+
+        self.gx = None
+        self.gy = None
+
+        self.set_goal(0., 0.)
+
+        # generate the potential field
+        self.potential_field_planning()
+    
+    def run(self, x, y): #-> (float, float):
+        
+        if self.oscillations_detection(s, y):
+            return None, None
+        
+        p, x, y, theta = self.get_potential(x, y)
+
+
+        # was getting 
+        p = 1 if p > 1 else p
+        p = -1 if p < -1 else p
+        return p, theta
+        
+    def new_obstacle(self, ox, oy):
+
+        self.set_obstacle(ox, oy)
+
+        return self.potential_field_planning()
+
+    def set_goal(self, gx, gy):
+        "Setter for the goal position"
+        self.gx = gx
+        self.gy = gy
+
+    def set_obstacle(self, ox, oy):
+        self.ox.append(ox)
+        self.oy.append(oy)
+
+    def calc_potential_field(self, gx, gy, ox, oy, rr):
+
+        minx = 0#min(min(ox), sx, gx) - self.AREA_WIDTH / 2.0
+        miny = 0#min(min(oy), sy, gy) - self.AREA_WIDTH / 2.0
+        maxx = self.AREA_WIDTH#max(max(ox), sx, gx) + self.AREA_WIDTH / 2.0
+        maxy = self.AREA_HEIGHT#max(max(oy), sy, gy) + self.AREA_WIDTH / 2.0
+        xw = int(round((maxx - minx) / self.reso))
+        yw = int(round((maxy - miny) / self.reso))
+
+        # calc each potential
+        pmap = [[0.0 for i in range(yw)] for i in range(xw)]
+
+        for ix in range(xw):
+            x = ix * self.reso + minx
+
+            for iy in range(yw):
+                y = iy * self.reso + miny
+                ug = self.calc_attractive_potential(x, y, gx, gy)
+
+                uo = self.calc_repulsive_potential(x, y, ox, oy, rr) if ox != [] else 0
+                uf = ug + uo
+                pmap[ix][iy] = uf
+
+        return pmap, minx, miny
+    
+    def calc_attractive_potential(self, x, y, gx, gy):
+        return 0.5 * self.KP * np.hypot(x - gx, y - gy)
+    
+    def calc_repulsive_potential(self, x, y, ox, oy, rr):
+        # search nearest obstacledq
+        minid = -1
+        dmin = float("inf")
+        for i, _ in enumerate(ox):
+            d = np.hypot(x - ox[i], y - oy[i])
+            if dmin >= d:
+                dmin = d
+                minid = i
+
+        # calc repulsive potential
+        # print(ox, oy)
+        dq = np.hypot(x - ox[minid], y - oy[minid])
+
+        if dq <= rr:
+            if dq <= 0.1:
+                dq = 0.1
+
+            return 0.5 * self.ETA * (1.0 / dq - 1.0 / rr) ** 2
+        else:
+            return 0.0
+        
+    def get_motion_model(self):
+        # dx, dy
+        motion = [[1, 0],
+              [0, 1],
+              [-1, 0],
+              [0, -1],
+              [-1, -1],
+              [-1, 1],
+              [1, -1],
+              [1, 1]]
+        
+        self.theta_options = [0., np.pi/2., np.pi, -np.pi/2., -3*np.pi/4., 3*np.pi/4., -1*np.pi/4., np.pi/4]
+
+        return motion
+    
+    def oscillations_detection(self, ix, iy):
+        self.previous_ids.append((ix, iy))
+
+        # print(previous_ids)
+
+        if (len(self.previous_ids) > self.OSCILLATIONS_DETECTION_LENGTH):
+            self.previous_ids.pop(0)
+
+        # check if contains any duplicates by copying into a set
+        previous_ids_set = set()
+        for index in self.previous_ids:
+            if index in previous_ids_set:
+                return True
+            else:
+                previous_ids_set.add(index)
+        return False
+
+    def potential_field_planning(self):
+
+        # calc potential field
+        self.pmap, self.minx, self.miny = self.calc_potential_field(self.gx, self.gy, self.ox, self.oy, 
+                                                                    self.rr)
+
+        return self.pmap, self.minx, self.miny
+    
+    def get_potential(self, x, y):
+
+        ix = int(round(x/self.reso))
+        iy = int(round(y/self.reso))
+
+
+        minp = float("inf")
+        minix, miniy, mini = -1, -1, 0
+
+        motion = self.get_motion_model()
+
+        for i, _ in enumerate(motion):
+            inx = int(ix + motion[i][0])
+            iny = int(iy + motion[i][1])
+            if inx >= len(self.pmap) or iny >= len(self.pmap[0]) or inx < 0 or iny < 0:
+                p = float("inf")  # outside area
+                # print("outside potential!")
+            else:
+                p = self.pmap[inx][iny]
+            if minp > p:
+                minp = p
+                minix = inx
+                miniy = iny
+                mini = i
+
+        x = minix * self.reso
+        y = miniy * self.reso
+
+        theta = self.theta_options[mini]
+        return p/self.max_p, x, y, theta
+    
+    def get_potential_index(self, ix, iy):
+
+        minp = float("inf")
+        minix, miniy = -1, -1
+
+        motion = self.get_motion_model()
+
+        for i, _ in enumerate(motion):
+            inx = int(ix + motion[i][0])
+            iny = int(iy + motion[i][1])
+            if inx >= len(self.pmap) or iny >= len(self.pmap[0]) or inx < 0 or iny < 0:
+                p = float("inf")  # outside area
+                # print("outside potential!")
+            else:
+                p = self.pmap[inx][iny]
+            if minp > p:
+                minp = p
+                minix = inx
+                miniy = iny
+        return p, minix, miniy
 
 
 # ------ STATE MACHINE
