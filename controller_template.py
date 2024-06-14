@@ -692,15 +692,370 @@ class Controller:
         u_v = self.controller_vel(error_x, dt)
         return u_v, u_theta
 
+# ------- STATE ESTIMATOR
+class ParticleFilter:
+
+    def __init__(self, x_range, y_range):
+
+        self.mouseX = 0
+        self.mouseY = 0
+        # self.prev_x = -1
+        # self.prev_y = -1
+
+        self.x_range = np.array(x_range)
+        self.y_range = np.array(y_range)
+
+        self.particles_num = 400
+        self.particles = np.empty((self.particles_num, 3))  # [x, y, theta]
+        self.create_uniform_particles()
+
+        self.landmarks = []
+        self.weights = np.ones(self.particles_num) / self.particles_num
+        self.seen_landmarks = np.array([])
+        self.landmarks_dict = {'id': [1, 2, 3, 4, 5, 6],
+                               'pose': np.array([[0, 117], [90, 0], [261, 0], [351, 117], [261, 235], [90, 235]]),
+                               }
+
+        tr_model_mean = 0.0000001
+        tr_model_var = 1
+        tr_model = [tr_model_mean, tr_model_var]
+
+        rot_model_mean = 0.0000001
+        rot_model_var = 0.01
+        rot_model = [rot_model_mean, rot_model_var]
+        self.rotation_model = rot_model
+        self.translation_model = tr_model
+
+    def particle_filter_update(self, heading_vel, angular_vel, measured_distances, measured_ids, dt=0.1):
+
+        direction = angular_vel * dt
+        # direction = -direction + np.pi if direction > 0 else -np.pi - direction
+
+        # distance = np.linalg.norm(np.array([[self.prev_x, self.prev_y]]) - np.array([[x, y]]), axis=1)
+        distance = heading_vel * dt
+        # mouse movement noise is implemented in "distance" which is to be included in "u"
+        # velocity of the mouse which is considered to be a vector composed of "distance" and "direction"
+
+        u = np.array([direction, distance])
+
+        # predicting particles position with respect to the last movement of the mouse
+        self.predict(u)
+
+        self.landmark_detected(measured_ids)
+        self.update(z=measured_distances, R=50)
+
+        indexes = self.systematic_resample()
+        self.resample_from_index(indexes)
+
+        best_particles_idx = self.weights.argsort()[:int(0.4 * len(self.particles))]
+        best_particle = self.particle_distance(self.particles[best_particles_idx])
+        self.X, self.Y, self.Theta = best_particle[0], best_particle[1], best_particle[2]
+
+    def particle_distance(self, particles):
+        dist = np.zeros(len(particles))
+        for i, particle in enumerate(particles):
+            dist[i] = sum(np.sqrt((particle[0] - particles[:, 0]) ** 2 + (particle[1] - particles[:, 1]) ** 2))
+        return particles[np.argmin(dist)]
+
+    def create_uniform_particles(self):
+        # self.particles[:, 0] = uniform(self.x_range[0], self.x_range[1], size=len(self.particles))
+        # self.particles[:, 1] = uniform(self.y_range[0], self.y_range[1], size=len(self.particles))
+        # print(len(self.particles))
+        self.particles[:, 0] = uniform(self.x_range[0], self.x_range[1], size=len(self.particles))
+        self.particles[:, 1] = uniform(self.y_range[0], self.y_range[1], size=len(self.particles))
+        self.particles[:, 2] = uniform(-np.pi, np.pi, size=self.particles_num)
+
+    # def predict(self, d, dtheta, dt=1):
+    #     self.particles[:, 0] += np.cos(u[0]) * ((u[1] * dt + np.random.normal(0.1, 5, self.particles_num)))
+    #     self.particles[:, 1] += np.sin(u[0]) * ((u[1] * dt + np.random.normal(0.1, 5, self.particles_num)))
+    #
+    #     self.particles[:, 0] += (d * np.cos(yaw_setpoint) + np.random.normal(self.translation_model[0], self.translation_model[1],
+    #                                                   self.num_of_particles))
+    #     self.particles[:, 1] += (d * np.sin(yaw_setpoint)+ np.random.normal(self.translation_model[0], self.translation_model[1],
+    #                                                   self.num_of_particles))
+
+    def predict(self, u, dt=1, yaw_setpoint=0):
+        direction, distance = u
+        std_dev = 0.2
+        # self.particles[:, 0] += distance * np.cos(direction) + np.random.normal(0, std_dev, self.particles_num)
+        # self.particles[:, 1] += distance * np.sin(direction) + np.random.normal(0, std_dev, self.particles_num)
+        # self.particles[:, 2] += direction + np.random.normal(0, std_dev, self.particles_num)
+
+        self.particles[:, 0] += (distance * np.cos(yaw_setpoint) + np.random.normal(self.translation_model[0],
+                                                                                    self.translation_model[1],
+                                                                                    self.particles_num))
+        self.particles[:, 1] += (distance * np.sin(yaw_setpoint) + np.random.normal(self.translation_model[0],
+                                                                                    self.translation_model[1],
+                                                                                    self.particles_num))
+        self.particles[:, 2] += direction + np.random.normal(self.rotation_model[0], self.rotation_model[1],
+                                                             self.particles_num)
+
+        # Ensure particles stay within bounds
+        self.particles[:, 0] = np.clip(self.particles[:, 0], self.x_range[0], self.x_range[1])
+        self.particles[:, 1] = np.clip(self.particles[:, 1], self.y_range[0], self.y_range[1])
+        self.particles[:, 2] = (self.particles[:, 2] + np.pi) % (2 * np.pi) - np.pi
+
+    def update(self, z, R):
+        self.weights.fill(1.)
+        for i, landmark in enumerate(self.landmarks):
+            distance = np.power(
+                (self.particles[:, 0] - landmark[0]) ** 2 + (self.particles[:, 1] - landmark[1]) ** 2, 0.5)
+            R = distance * 0.5
+            self.weights *= scipy.stats.norm(distance, R).pdf(z[i])
+
+        self.weights += 1.e-300  # avoid round-off to zero
+        self.weights /= sum(self.weights)
+
+    def systematic_resample(self):
+        N = len(self.weights)
+        positions = (np.arange(N) + np.random.random()) / N
+
+        indexes = np.zeros(N, 'i')
+        cumulative_sum = np.cumsum(self.weights)
+        i, j = 0, 0
+        while i < N and j < N:
+            if positions[i] < cumulative_sum[j]:
+                indexes[i] = j
+                i += 1
+            else:
+                j += 1
+
+        return indexes
+
+    def resample_from_index(self, indexes):
+        self.particles[:] = self.particles[indexes]
+        self.weights[:] = self.weights[indexes]
+        self.weights /= np.sum(self.weights)
+
+    def landmark_detected(self, landmark_ids):
+        self.landmarks = []
+        for i in range(len(landmark_ids)):
+            # self.landmarks.append(self.landmarks_dict['pose'][landmark_ids[i]])
+            index = self.landmarks_dict['id'].index(landmark_ids[i])
+            # Retrieve the pose using the index
+            pose = self.landmarks_dict['pose'][index]
+            self.landmarks.append(pose)
+
+
 # ------ PLANNER CLASS
 
 class Planner:
-    
-    def __init__(self):
-        pass
 
-    def run(self, x, y) -> (float, float):
-        pass
+    def __init__(self,
+                 reso = 0.05,
+                 robot_radius=0.4,
+                 max_p = 10., 
+                 KP = 5.0,
+                 ETA = 100., 
+                 AREA_WIDTH=3.51, 
+                 AREA_HEIGHT=2.34
+                ):
+        """
+        initialize the planner
+
+        params:
+            - reso: float, the resolution of the grid for the potential field.  Default = 0.01
+            - robot_radius: float, radius of the robot in meters, control size boundaries around obstacles.  Default=0.4
+            - max_p: float, scaling factor that converts potential to speed.  Default=10
+            - KP: float, attractive potential gain.  Default=5.0
+            - ETA: float, repulsive potential gain.  Dfault=100.
+            - AREA_WIDTH:, float, width of map. Default=3.51
+            - AREA_HEIGHT: float, height of map.  Default=2.34
+        """
+
+        self.KP = KP  # attractive potential gain
+        self.ETA = ETA # repulsive potential gain
+        self.AREA_WIDTH = AREA_WIDTH # potential area width [m] 350 w 234 [h]
+        self.AREA_HEIGHT = AREA_HEIGHT
+        # the number of previous positions used to check oscillations
+        self.OSCILLATIONS_DETECTION_LENGTH = 3
+
+        self.reso = reso
+        self.rr = robot_radius
+        self.max_p = max_p
+
+        self.previous_ids = []
+
+        self.ox = []
+        self.oy = []
+
+        self.gx = None
+        self.gy = None
+
+        self.set_goal(0., 0.)
+
+        # generate the potential field
+        self.potential_field_planning()
+    
+    def run(self, x, y): #-> (float, float):
+        
+        if self.oscillations_detection(s, y):
+            return None, None
+        
+        p, x, y, theta = self.get_potential(x, y)
+
+
+        # was getting 
+        p = 1 if p > 1 else p
+        p = -1 if p < -1 else p
+        return p, theta
+        
+    def new_obstacle(self, ox, oy):
+
+        self.set_obstacle(ox, oy)
+
+        return self.potential_field_planning()
+
+    def set_goal(self, gx, gy):
+        "Setter for the goal position"
+        self.gx = gx
+        self.gy = gy
+
+    def set_obstacle(self, ox, oy):
+        self.ox.append(ox)
+        self.oy.append(oy)
+
+    def calc_potential_field(self, gx, gy, ox, oy, rr):
+
+        minx = 0#min(min(ox), sx, gx) - self.AREA_WIDTH / 2.0
+        miny = 0#min(min(oy), sy, gy) - self.AREA_WIDTH / 2.0
+        maxx = self.AREA_WIDTH#max(max(ox), sx, gx) + self.AREA_WIDTH / 2.0
+        maxy = self.AREA_HEIGHT#max(max(oy), sy, gy) + self.AREA_WIDTH / 2.0
+        xw = int(round((maxx - minx) / self.reso))
+        yw = int(round((maxy - miny) / self.reso))
+
+        # calc each potential
+        pmap = [[0.0 for i in range(yw)] for i in range(xw)]
+
+        for ix in range(xw):
+            x = ix * self.reso + minx
+
+            for iy in range(yw):
+                y = iy * self.reso + miny
+                ug = self.calc_attractive_potential(x, y, gx, gy)
+
+                uo = self.calc_repulsive_potential(x, y, ox, oy, rr) if ox != [] else 0
+                uf = ug + uo
+                pmap[ix][iy] = uf
+
+        return pmap, minx, miny
+    
+    def calc_attractive_potential(self, x, y, gx, gy):
+        return 0.5 * self.KP * np.hypot(x - gx, y - gy)
+    
+    def calc_repulsive_potential(self, x, y, ox, oy, rr):
+        # search nearest obstacledq
+        minid = -1
+        dmin = float("inf")
+        for i, _ in enumerate(ox):
+            d = np.hypot(x - ox[i], y - oy[i])
+            if dmin >= d:
+                dmin = d
+                minid = i
+
+        # calc repulsive potential
+        # print(ox, oy)
+        dq = np.hypot(x - ox[minid], y - oy[minid])
+
+        if dq <= rr:
+            if dq <= 0.1:
+                dq = 0.1
+
+            return 0.5 * self.ETA * (1.0 / dq - 1.0 / rr) ** 2
+        else:
+            return 0.0
+        
+    def get_motion_model(self):
+        # dx, dy
+        motion = [[1, 0],
+              [0, 1],
+              [-1, 0],
+              [0, -1],
+              [-1, -1],
+              [-1, 1],
+              [1, -1],
+              [1, 1]]
+        
+        self.theta_options = [0., np.pi/2., np.pi, -np.pi/2., -3*np.pi/4., 3*np.pi/4., -1*np.pi/4., np.pi/4]
+
+        return motion
+    
+    def oscillations_detection(self, ix, iy):
+        self.previous_ids.append((ix, iy))
+
+        # print(previous_ids)
+
+        if (len(self.previous_ids) > self.OSCILLATIONS_DETECTION_LENGTH):
+            self.previous_ids.pop(0)
+
+        # check if contains any duplicates by copying into a set
+        previous_ids_set = set()
+        for index in self.previous_ids:
+            if index in previous_ids_set:
+                return True
+            else:
+                previous_ids_set.add(index)
+        return False
+
+    def potential_field_planning(self):
+
+        # calc potential field
+        self.pmap, self.minx, self.miny = self.calc_potential_field(self.gx, self.gy, self.ox, self.oy, 
+                                                                    self.rr)
+
+        return self.pmap, self.minx, self.miny
+    
+    def get_potential(self, x, y):
+
+        ix = int(round(x/self.reso))
+        iy = int(round(y/self.reso))
+
+
+        minp = float("inf")
+        minix, miniy, mini = -1, -1, 0
+
+        motion = self.get_motion_model()
+
+        for i, _ in enumerate(motion):
+            inx = int(ix + motion[i][0])
+            iny = int(iy + motion[i][1])
+            if inx >= len(self.pmap) or iny >= len(self.pmap[0]) or inx < 0 or iny < 0:
+                p = float("inf")  # outside area
+                # print("outside potential!")
+            else:
+                p = self.pmap[inx][iny]
+            if minp > p:
+                minp = p
+                minix = inx
+                miniy = iny
+                mini = i
+
+        x = minix * self.reso
+        y = miniy * self.reso
+
+        theta = self.theta_options[mini]
+        return p/self.max_p, x, y, theta
+    
+    def get_potential_index(self, ix, iy):
+
+        minp = float("inf")
+        minix, miniy = -1, -1
+
+        motion = self.get_motion_model()
+
+        for i, _ in enumerate(motion):
+            inx = int(ix + motion[i][0])
+            iny = int(iy + motion[i][1])
+            if inx >= len(self.pmap) or iny >= len(self.pmap[0]) or inx < 0 or iny < 0:
+                p = float("inf")  # outside area
+                # print("outside potential!")
+            else:
+                p = self.pmap[inx][iny]
+            if minp > p:
+                minp = p
+                minix = inx
+                miniy = iny
+        return p, minix, miniy
 
 
 # ------ STATE MACHINE
@@ -717,17 +1072,17 @@ class StateMachine:
     def __init__(self):
         self.state = 0
 
-    def state_transition():
+    def state_transition(self):
         if self.state < 3:
             self.state +=1
         else:
             self.state = -1
         self.print_state()
     
-    def print_state():
+    def print_state(self):
         print(f"Current state: {self.states[self.state]}")
 
-    def reset():
+    def reset(self):
         self.state = -1
     
 
@@ -741,6 +1096,8 @@ history = []
 
 frontend = Frontend()
 # state_estimator = StateEstimator()
+state_estimator = ParticleFilter([-58, 253], [-117.5, 117.5])
+
 # planner = Planner()
 controller = Controller()
 
@@ -798,7 +1155,11 @@ try:
             if state_machine.state == StateMachine.states['LOCALIZE']:
                 ######### PASS res_frontend['measurements'] to state estimation
                 # localize the robot
-                pass
+                state_estimator.particle_filter_update(heading_vel=5,
+                                                       angular_vel=-1,
+                                                       measured_distances=[100, 20],
+                                                       measured_ids=[1, 3])
+                print("Estimated Pose: {}, {}, {}".format(state_estimator.X, state_estimator.Y, state_estimator.Theta))
 
             if state_machine.state == StateMachine.states['PLAN']:
                 ######### PASS the results of state estimation to planer (in global frame)
