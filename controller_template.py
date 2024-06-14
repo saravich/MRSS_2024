@@ -1134,6 +1134,9 @@ try:
             if res_frontend['error_direction'] is not None:
                 error_theta = res_frontend['error_direction']
 
+            # if we cannot localize properly, then explore?
+            # if (res_frontend['measurements']==None).all():
+            #     state_machine.reset()
 
             if state_machine.state == StateMachine.states['EXPLORE']:
                 if not (res_frontend['measurements']==None).all():
