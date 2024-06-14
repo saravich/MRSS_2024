@@ -9,7 +9,6 @@ import time
 import numpy as np
 import cv2
 import pyrealsense2 as rs
-from time import sleep
 
 CONNECT_SERVER = False  # False for local tests, True for deployment
 
@@ -666,15 +665,15 @@ class Controller:
 
     def happy_moves():
         send(s, 0., 0., -0.7)
-        sleep(2.)
+        time.sleep(2.)
         send(s, 0., 0., 0.7)
-        sleep(2.)
+        time.sleep(2.)
         send(s, 0., 0., -0.7)
-        sleep(2.)
+        time.sleep(2.)
         send(s, 0., 0., 0.7)
-        sleep(2.)
+        time.sleep(2.)
         send(s, 0., 0., -0.7)
-        sleep(2.)
+        time.sleep(2.)
         send(s, 0., 0., 0.)
 
     def run(self, error_x, error_theta, dt):
