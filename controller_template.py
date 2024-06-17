@@ -9,7 +9,7 @@ import time
 import numpy as np
 import cv2
 import pyrealsense2 as rs
-from time import sleep
+
 
 CONNECT_SERVER = False  # False for local tests, True for deployment
 
@@ -29,7 +29,7 @@ TIMEOUT = 180
 # Minimum control loop duration:
 MIN_LOOP_DURATION = 0.1
 
-
+COUNTING_BACK=0
 # Use this function to send commands to the robot:
 def send(sock, x, y, r):
     """
@@ -57,322 +57,6 @@ def _clamp(value, limits):
         return lower
     return value
 
-# ---------- HELPING FUNCTIONS
-
-MIN_OBS_DISTANCE = 0.5  # meters
-
-
-def spin(s, speed):
-    """
-    Spin the robot in place.
-
-    :param s: TCP socket
-    :param speed: angular velocity (between -1 and 1)
-    """
-    send(s, 0., 0., speed)
-
-def go_back(s, a=-1):
-    """
-    Move the robot backwards.
-
-    :param s: TCP socket
-    :param a: backward velocity (between -1 and 1)
-    """
-    # clip the value to the range [-1, 1]
-    a = np.clip(a, -1, 0)
-    send(s, a, 0., 0.)
-
-def move(s, x, r):
-    """
-    Move the robot forward.
-
-    :param x: forward velocity (between -1 and 1)
-    :param r: yaw rate (between -1 and 1)
-    """
-    send(s, x, 0., r)
-
-
-
-# ------ FRONTEND CLASS
-
-class Fronted():
-    """
-    This class hanlde all the RGB and depth data
-    """
-    map_landmarks = {
-        "1": [-0.58, 0.],
-        "2": [0.32, 1.175],
-        "3": [2.03, 1.175],
-        "4": [2.93, 0.],
-        "5": [2.03, -1.175],
-        "6": [0.32, -1.175] 
-        } # TODO whats the unit of the values?
-
-    def __init__(self):
-        # Fisheye camera (distortion_model: narrow_stereo):
-
-        self.image_width = 640
-        self.image_height = 480
-
-        # --------- DO NOT CHANGE THIS PART ---------
-
-        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
-
-
-        self.arucoParams = cv2.aruco.DetectorParameters_create()
-        self.arucoParams.markerBorderBits = 1
-
-        # --------- CHANGE THIS PART (optional) ---------
-
-        self.pipeline = rs.pipeline()
-        self.config = rs.config()
-
-        # Get device product line for setting a supporting resolution
-        pipeline_wrapper = rs.pipeline_wrapper(self.pipeline)
-        pipeline_profile = self.config.resolve(pipeline_wrapper)
-        device = pipeline_profile.get_device()
-        device_product_line = str(device.get_info(rs.camera_info.product_line))
-
-        found_rgb = False
-        for s in device.sensors:
-            if s.get_info(rs.camera_info.name) == 'RGB Camera':
-                found_rgb = True
-                break
-        if not found_rgb:
-            print("Could not find a depth camera with color sensor")
-            exit(0)
-
-        # Depht available FPS: up to 90Hz
-        self.config.enable_stream(rs.stream.depth, self.image_width, image_height, rs.format.z16, 30)
-        # RGB available FPS: 30Hz
-        self.config.enable_stream(rs.stream.color, self.image_width, image_height, rs.format.bgr8, 30)
-        # # Accelerometer available FPS: {63, 250}Hz
-        # config.enable_stream(rs.stream.accel, rs.format.motion_xyz32f, 250)
-        # # Gyroscope available FPS: {200,400}Hz
-        # config.enable_stream(rs.stream.gyro, rs.format.motion_xyz32f, 200)
-
-        # Start streaming
-        profile = pipeline.start(self.config)
-
-        # Getting the depth sensor's depth scale (see rs-align example for explanation)
-        depth_sensor = profile.get_device().first_depth_sensor()
-        self.depth_scale = depth_sensor.get_depth_scale()
-
-        # We will be removing the background of objects more than
-        #  clipping_distance_in_meters meters away
-        clipping_distance_in_meters = 2.5 # 3 meter
-        self.clipping_distance = clipping_distance_in_meters / self.depth_scale
-
-        # Create an align object
-        # rs.align allows us to perform alignment of depth frames to others frames
-        # The "align_to" is the stream type to which we plan to align depth frames.
-        align_to = rs.stream.color
-        self.align = rs.align(align_to)
-
-        self.depth_frame = None
-        self.color_frame = None
-
-        self.normalized_depth_directions = []
-
-    def map_augmenter(self):
-        apriltag_size_half = 0.1
-        # augment the map with pseudo landmarks that are 10 cm away from the real landmarks
-        self.map_landmarks["1_1"] = [map_landmarks["1"][0],  map_landmarks["1"][0] + apriltag_size_half]
-        self.map_landmarks["1_2"] = [map_landmarks["1"][0],  map_landmarks["1"][0] - apriltag_size_half]
-
-        self.map_landmarks["2_1"] = [map_landmarks["2"][0] + apriltag_size_half,  map_landmarks["2"][0]]
-        self.map_landmarks["2_2"] = [map_landmarks["2"][0] - apriltag_size_half,  map_landmarks["2"][0]]
-
-        self.map_landmarks["3_1"] = [map_landmarks["3"][0] + apriltag_size_half,  map_landmarks["3"][0]]
-        self.map_landmarks["3_2"] = [map_landmarks["3"][0] - apriltag_size_half,  map_landmarks["3"][0]]
-
-        self.map_landmarks["4_1"] = [map_landmarks["4"][0],  map_landmarks["4"][0] + apriltag_size_half]
-        self.map_landmarks["4_2"] = [map_landmarks["4"][0],  map_landmarks["4"][0] - apriltag_size_half]
-
-        self.map_landmarks["5_1"] = [map_landmarks["5"][0] + apriltag_size_half,  map_landmarks["5"][0]]
-        self.map_landmarks["5_2"] = [map_landmarks["5"][0] - apriltag_size_half,  map_landmarks["5"][0]]
-
-        self.map_landmarks["6_1"] = [map_landmarks["6"][0] + apriltag_size_half,  map_landmarks["6"][0]]
-        self.map_landmarks["6_2"] = [map_landmarks["6"][0] - apriltag_size_half,  map_landmarks["6"][0]]
-
-    def smoother(self, data, window_size):
-        """ Mean smoothing """
-        return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
-
-    def meters2scale(self, meters) -> float:
-        return meters / self.depth_scale
-
-    def read(self) -> bool:
-        # Wait for a coherent pair of frames: depth and color
-        frames = self.pipeline.wait_for_frames()
-
-        # Align the depth frame to color frame
-        aligned_frames = self.align.process(frames)
-
-        # read the frames
-        self.depth_frame = aligned_frames.get_depth_frame()
-        self.color_frame = aligned_frames.get_color_frame()
-
-        # Validate that both frames are valid
-        if not self.depth_frame or not self.color_frame:
-            return False
-        return True
-        
-    
-    def run(self, history=None):
-        # read data
-        if self.read() is False:
-            return
-
-        if history is not None:
-            history.append((self.depth_frame, self.color_frame))
-
-        # extract safe direction
-        error_direction, average_depth, depth_strip = self.extract_direction_and_depth()
-
-        # extract april tags
-        detected_corners, detected_ids, _ = self.get_april_tags()
-
-        measurements = self.landmarks2map(detected_ids, detected_corners, depth_strip)
-
-        if detected_ids is not None:
-            self.landmarks2map(detected_ids, detected_corners)
-
-        return {
-            "error_direction": error_direction,
-            "average_depth": average_depth,
-            "measurements": measurements
-        }
-
-    def extract_direction_and_depth(self) -> (float, float):
-        # Convert images to numpy arrays
-        depth_image = np.asanyarray(self.depth_frame.get_data())
-
-        # remove the measurement farther than clipping_distance
-        depth_image = np.clip(depth_image, 0, self.clipping_distance)
-
-        # crop an horizontal strip of the depth image image_height = 480
-        depth_image_bottom_crop = depth_image[280:, :]
-
-        # compute the average depth
-        average_depth = np.mean(depth_image_bottom_crop)
-
-        # compute the median value of the cropped depth image
-        depth_bottom_crop_median = np.median(depth_image_bottom_crop)
-
-        # squeeze the depth image to a 1D array averaging the values of the horizontal strip
-        # in this way we do not care much about artifacts in the depth image
-        depth_strip = np.mean(depth_image_bottom_crop, axis=0)
-        depth_strip_clone = depth_strip.copy()
-
-        # threshold the depth image according to the meadian value
-        depth_strip[depth_strip < depth_bottom_crop_median] = 0.
-        depth_strip[depth_strip >= depth_bottom_crop_median] = 1.
-        
-        # find the segments of contiguous ones
-        segments = self.find_segments(depth_strip)
-
-        # find the segment with the maximum length
-        if segments:
-            segment = max(segments, key=self.segment_length)
-            depth_center = self.midpoint(segment) 
-            # center the depth_center in the depth image
-            depth_center -= self.image_width / 2.
-            # normalize the depth_center
-            depth_center /= ((self.image_width / 2.) / 2.)
-
-            self.normalized_depth_directions.append(depth_center)
-            
-            if len(self.normalized_depth_directions) > 5:
-                depth_center = self.smoother(self.normalized_depth_directions, 5)
-                self.normalized_depth_directions.pop(0)
-                
-                return depth_center, average_depth, depth_strip_clone
-            return None, average_depth, depth_strip_clone
-        else:
-            if len(self.normalized_depth_directions) > 5:
-                return 0., average_depth
-            return None, average_depth, depth_strip_clone
-
-        if np.isnan(depth_center):
-            return 0., average_depth, depth_strip_clone
-
-    def get_april_tags(self) -> (np.array, np.array, np.array):
-        # Convert images to numpy arrays
-        color_image = np.asanyarray(self.color_frame.get_data())
-        
-        # Markersangular_output_cmd detection:
-        grey_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
-        (detected_corners, detected_ids, rejected) = cv2.aruco.detectMarkers(grey_frame, self.aruco_dict, parameters=self.arucoParams)
-
-        return detected_corners, detected_ids, rejected
-
-    def find_segments(self, arr):
-        """Function to find segments of contiguous ones"""
-        segments = []
-        start = None
-        for i, val in enumerate(arr):
-            if val == 1 and start is None:
-                start = i
-            elif val == 0 and start is not None:
-                segments.append((start, i - 1))
-                start = None
-        if start is not None:
-            segments.append((start, len(arr) - 1))
-        return segments
-
-    def segment_length(self, segment):
-        """Function to calculate the length of a segment"""
-        return segment[1] - segment[0] + 1
-
-    def midpoint(self, segment):
-        """Function to calculate the midpoint of a segment"""
-        return (segment[0] + segment[1]) / 2
-    
-    def landmarks2map(self, detected_ids, detected_corners, depth_strip) -> dict:
-        angular_output_cmd = 0.0
-        linear_vel=0
-        measurements = {
-            "1": None,
-            "2": None,
-            "3": None,
-            "4": None,
-            "5": None,
-            "6": None,
-            "1_1": None,
-            "2_1": None,
-            "3_1": None,
-            "4_1": None,
-            "5_1": None,
-            "6_1": None,
-            "1_2": None,
-            "2_2": None,
-            "3_2": None,
-            "4_2": None,
-            "5_2": None,
-            "6_2": None
-        }
-        for i, id_ in enumerate(detected_ids):
-            if not id_ in self.map_landmarks:
-                continue
-            # on the depth strip get the x coordinates of the corners and the center of the landmark
-            landmark_center = detected_corners[i][0][0] + (detected_corners[i][0][2] - detected_corners[i][0][0]) / 2.
-            landmark_center = landmark_center.astype(int)
-            x = landmark_center[0]
-            measurements[id_] = depth_strip[x]
-
-            # ugmented
-            x_1 = detected_corners[i][0][2][0].astype(int)
-            measurements[id_ + "_1"] = depth_strip[x_1]
-
-            x_2 = detected_corners[i][0][0][0].astype(int)
-            measurements[id_ + "_2"] = depth_strip[x_2]
-        return measurements
-
-    def stop(self):
-        self.pipeline.stop()
-
-# ------ PID CLASS
 
 class PID(object):
     """A simple PID controller."""
@@ -613,130 +297,90 @@ class PID(object):
     def reset(self):
         self._last_input = None
 
-# ------ CONTROLLER CLASS
+# ----------
 
-class Controller:
+# Motion priority:
 
-    def __init__(self):
-        # define the PID controller
-        self.controller_theta = PID(
-            Kp=1.0, Ki=0.05, Kd=0.05,
-            setpoint=0, #  image_width / 2,
-            sample_time=MIN_LOOP_DURATION,
-            output_limits = [-1,1],
-            auto_mode=True,
-            proportional_on_measurement=False,
-            differential_on_measurement=False,
-            error_map=None,
-            time_fn=None,
-            starting_output=0
-        )
+def spin(s, speed):
+    """
+    Spin the robot in place.
 
-        self.controller_vel=PID(
-            Kp=1.0, Ki=0.01, Kd=0.08,
-            setpoint=-0.5,
-            sample_time=MIN_LOOP_DURATION,
-            output_limits = [-1,1],
-            auto_mode=True,
-            proportional_on_measurement=False,
-            differential_on_measurement=False,
-            error_map=None,
-            time_fn=None,
-            starting_output=0
-        )
-    
-    def backward(self,s, error_x, error_theta, dt):
-        self.controller_vel.setpoint = 0.7
-        u_v = self.controller_vel(error_x, dt)
-        u_theta = self.controller_theta(error_theta, dt)
-        send(s, u_v, 0., u_theta)
+    :param direction: 1 for clockwise, -1 for counterclockwise
+    :param speed: speed of the rotation (between 0 and 1)
+    """
+    send(s, 0., 0., speed)
 
-    def forward(self,s, error_x, error_theta, dt):
-        self.controller_vel.setpoint = -0.5
-        u_v = self.controller_vel(-error_x, dt)
-        u_theta = self.controller_theta(error_theta, dt)
-        send(s, u_v, 0., u_theta)
+def go_back(s, a):
+    """
+    Move the robot backwards.
+    """
+    send(s, -1.0*a, 0., 0.)
+
+def move_forward(s, x, r):
+    """
+    Move the robot forward.
+
+    :param x: forward velocity (between -1 and 1)
+    :param y: side velocity (between -1 and 1)
+    """
+    send(s, x, 0., r)
+# ----------
 
 
-    def setpoints(self, set_x=None, set_theta=None):
-        if set_x is not None:
-            self.controller_vel.setpoint = set_x
-        if set_theta is not None:
-            self.controller_theta.setpoint = set_theta
+# Fisheye camera (distortion_model: narrow_stereo):
 
-    def happy_moves():
-        send(s, 0., 0., -0.7)
-        sleep(2.)
-        send(s, 0., 0., 0.7)
-        sleep(2.)
-        send(s, 0., 0., -0.7)
-        sleep(2.)
-        send(s, 0., 0., 0.7)
-        sleep(2.)
-        send(s, 0., 0., -0.7)
-        sleep(2.)
-        send(s, 0., 0., 0.)
+image_width = 640
+image_height = 480
 
-    def run(self, error_x, error_theta, dt):
-        self.controller_theta.setpoint = error_theta
-        u_theta = self.controller_theta(theta, dt)
-        u_v = self.controller_vel(error_x, dt)
-        return u_v, u_theta
+# --------- CHANGE THIS PART (optional) ---------
 
-# ------ PLANNER CLASS
+pipeline = rs.pipeline()
+config = rs.config()
 
-class Planner:
-    
-    def __init__(self):
-        pass
+# Get device product line for setting a supporting resolution
+pipeline_wrapper = rs.pipeline_wrapper(pipeline)
+pipeline_profile = config.resolve(pipeline_wrapper)
+device = pipeline_profile.get_device()
+device_product_line = str(device.get_info(rs.camera_info.product_line))
 
-    def run(self, x, y) -> (float, float):
-        pass
+found_rgb = False
+for s in device.sensors:
+    if s.get_info(rs.camera_info.name) == 'RGB Camera':
+        found_rgb = True
+        break
+if not found_rgb:
+    print("Could not find a depth camera with color sensor")
+    exit(0)
 
+# Depht available FPS: up to 90Hz
+config.enable_stream(rs.stream.depth, image_width, image_height, rs.format.z16, 30)
+# RGB available FPS: 30Hz
+config.enable_stream(rs.stream.color, image_width, image_height, rs.format.bgr8, 30)
+# # Accelerometer available FPS: {63, 250}Hz
+# config.enable_stream(rs.stream.accel, rs.format.motion_xyz32f, 250)
+# # Gyroscope available FPS: {200,400}Hz
+# config.enable_stream(rs.stream.gyro, rs.format.motion_xyz32f, 200)
 
-# ------ STATE MACHINE
-
-class StateMachine:
-    states = {
-        'STOP': -1,
-        'EXPLORE': 0,
-        'LOCALIZE': 1,
-        'PLAN': 2,
-        'MOVE': 3,
-    }
-
-    def __init__(self):
-        self.state = 0
-
-    def state_transition():
-        if self.state < 3:
-            self.state +=1
-        else:
-            self.state = -1
-        self.print_state()
-    
-    def print_state():
-        print(f"Current state: {self.states[self.state]}")
-
-    def reset():
-        self.state = -1
-    
-
+# Start streaming
+pipeline.start(config)
 
 # ----------- DO NOT CHANGE THIS PART -----------
+
+aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
+
+
+arucoParams = cv2.aruco.DetectorParameters_create()
+arucoParams.markerBorderBits = 1
 
 RECORD = False
 history = []
 
 # ----------------- CONTROLLER -----------------
 
-frontend = Fronted()
-# state_estimator = StateEstimator()
-# planner = Planner()
-controller = Controller()
 
-state_machine = StateMachine()
-
+align_to = rs.stream.color
+align = rs.align(align_to)
+GOAL_REACHED = False
 try:
     # We create a TCP socket to talk to the Jetson at IP 192.168.123.14, which runs our walking policy:
 
@@ -755,53 +399,148 @@ try:
         start_time = time.time()
         previous_time_stamp = start_time
 
-        min_obs_distance = frontend.meters2scale(MIN_OBS_DISTANCE)
+        controller = PID(
+            Kp=1.0, Ki=0.05, Kd=0.05,
+            setpoint=0, #  image_width / 2,
+            sample_time=MIN_LOOP_DURATION,
+            output_limits = [-1,1],
+            auto_mode=True,
+            proportional_on_measurement=False,
+            differential_on_measurement=False,
+            error_map=None,
+            time_fn=None,
+            starting_output=0
+        )
+
+        controller_vel=PID(
+            Kp=1.0, Ki=0.01, Kd=0.08,
+            setpoint=-0.5,
+            sample_time=MIN_LOOP_DURATION,
+            output_limits = [-1,1],
+            auto_mode=True,
+            proportional_on_measurement=False,
+            differential_on_measurement=False,
+            error_map=None,
+            time_fn=None,
+            starting_output=0
+
+        )
 
         # main control loop:
         while not task_complete and not time.time() - start_time > TIMEOUT:
-            error_theta = 0.
-            error_x = 0.
+
             # avoid busy loops:
             now = time.time()
             dt = now - previous_time_stamp
             if dt < MIN_LOOP_DURATION:
                 time.sleep(MIN_LOOP_DURATION - dt)
 
-            res_frontend = frontend.run(history)
-            
-            # stop and go back if too close with an obstacle
-            if res_frontend['average_depth'] < min_obs_distance:
-                controller.backward(s, res_frontend['average_depth'], 0, dt)
-                continue
-            
-            if res_frontend['error_direction'] is not None:
-                error_theta = res_frontend['error_direction']
+            if GOAL_REACHED:
+                send(s, 0., 0., 0.)
+                break
 
+            # ---------- CHANGE THIS PART (optional) ----------
 
-            if state_machine.state == StateMachine.states['EXPLORE']:
-                if not (res_frontend['measurements']==None).all():
-                    state_machine.state_transition()
-                # we cannot localize properly, then explore
-                controller.forward(s, res_frontend['average_depth'], error_theta, dt)
+            # Wait for a coherent pair of frames: depth and color
+            frames = pipeline.wait_for_frames()
+
+            aligned_frames = align.process(frames)
+
+            depth_frame = aligned_frames.get_depth_frame()
+            color_frame = aligned_frames.get_color_frame()
+            if not depth_frame or not color_frame:
                 continue
 
-            if state_machine.state == StateMachine.states['LOCALIZE']:
-                ######### PASS res_frontend['measurements'] to state estimation
-                # localize the robot
-                pass
+            if RECORD:
+                history.append((depth_frame, color_frame))
 
-            if state_machine.state == StateMachine.states['PLAN']:
-                ######### PASS the results of state estimation to planer (in global frame)
-                # plan the path
-                pass
+            # Convert images to numpy arrays
+            depth_image = np.asanyarray(depth_frame.get_data())
+            color_image = np.asanyarray(color_frame.get_data())
 
-            if state_machine.state == StateMachine.states['MOVE']:
-                # move the robot
-                pass
-                # from here go back to state == -1 with state transition
-                # and controller.happy_moves()
+            # depth_image = cv2.medianBlur(depth_image, 5)
+            # avg of the depth image
+            depth_full_mean = np.mean(depth_image)
+            # remove the measurement farther than 2.5m
+            depth_image[depth_image > 2500] = 2500.
+
+            # crop a square in the center of the depth image
+            depth_image_center = depth_image[280:, :]
+
+            # normalize the depth image
+            # depth_center_mean = (depth_center_mean- np.min(depth_image_center))/(np.max(depth_image_center) - np.min(depth_image_center))
+            depth_center_mean = np.mean(depth_image_center)
+
+            # crop an horizontal strip of the depth image image_height = 480
+            depth_image_crop = depth_image[280:, :]
+
+            depth_crop_mean_ = np.median(depth_image_crop, axis=0)
+
+            # threshold the depth image according to the mean value
+            depth_crop_mean_[depth_crop_mean_ < depth_center_mean] = 0
+            depth_crop_mean_[depth_crop_mean_ >= depth_center_mean] = 1
+
+            # get a centroid of the depth image
+            depth_center = np.mean(np.where(depth_crop_mean_ == 1)[0])
+
+            # center the depth center
+            depth_center = depth_center - 320
+
+            if np.isnan(depth_center):
+                depth_center = 0
+
+            if depth_center_mean / 1000. < 0.5:
+                depth_center = 0
+                COUNTING_BACK=+1
+                go_back(s,COUNTING_BACK/3)
+                continue
+            COUNTING_BACK=0
+
+            normalized_depth_center = depth_center / 320.0
+
+            angular_output_cmd = controller(normalized_depth_center, dt)
+            # print(f"Angular output: {angular_output_cmd}")
+
+            linear_vel=controller_vel(-depth_center_mean, dt)
+
+            move_forward(s, 0.5, angular_output_cmd)
 
 
+            # --------------- CHANGE THIS PART ---------------
+
+            # --- Detect markers ---
+
+            # Markersangular_output_cmd detection:
+            grey_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
+            (detected_corners, detected_ids, rejected) = cv2.aruco.detectMarkers(grey_frame, aruco_dict, parameters=arucoParams)
+
+            angular_output_cmd = 0.0
+            linear_vel=0
+            if detected_ids is not None:
+                for i, id_ in enumerate(detected_ids):
+                    if id_!=6:
+                        continue
+                    # estimate depth as a median value of the values of the corners
+                    int_corners = detected_corners[i][0].astype(int)
+                    depth_estimate_mm = np.median(depth_image[int_corners[:, 1], int_corners[:, 0]])
+                    depth_estimate = depth_estimate_mm / 1000.
+                    landmark_center = detected_corners[i][0][0] + (detected_corners[i][0][2] - detected_corners[i][0][0]) / 2.
+                    landmark_center = landmark_center.astype(int)
+                    x = landmark_center[0]
+
+                    angular_output_cmd = controller(x, dt)
+                    linear_vel=controller_vel(-depth_estimate,dt)
+                    print(f"Depth estimate: {depth_estimate} m")
+                    if depth_estimate < 0.5:
+                        print("GOAL REACHED")
+                        GOAL_REACHED = True
+
+
+            #--- Compute control ---
+
+            # x_velocity = 0.0
+            # y_velocity = 0.0
+            # r_velocity = 0.0
         print(f"End of main loop.")
 
         if RECORD:
@@ -810,4 +549,4 @@ try:
                 pkl.dump(frames, f)
 finally:
     # Stop streaming
-    frontend.stop()
+    pipeline.stop()
