@@ -706,7 +706,7 @@ class ParticleFilter:
         self.x_range = np.array(x_range)
         self.y_range = np.array(y_range)
 
-        self.particles_num = 400
+        self.particles_num = 5000
         self.particles = np.empty((self.particles_num, 3))  # [x, y, theta]
         self.create_uniform_particles()
 
@@ -723,11 +723,11 @@ class ParticleFilter:
                                }
 
         tr_model_mean = 0.000
-        tr_model_var = 0.001
+        tr_model_var = 0.01
         tr_model = [tr_model_mean, tr_model_var]
 
         rot_model_mean = 0.000
-        rot_model_var = 0.001
+        rot_model_var = 0.01
         rot_model = [rot_model_mean, rot_model_var]
         self.rotation_model = rot_model
         self.translation_model = tr_model
@@ -740,11 +740,11 @@ class ParticleFilter:
         mask = np.array([d is not None for d in measured_distances])
         measured_distances = np.array(measured_distances)[mask]
         measured_ids = np.array(measured_ids)[mask]
-        print(measured_distances, measured_ids)
-        direction = angular_vel * dt
-        # direction = -direction + np.pi if direction > 0 else -np.pi - direction
 
-        # distance = np.linalg.norm(np.array([[self.prev_x, self.prev_y]]) - np.array([[x, y]]), axis=1)
+        # print(measured_distances, measured_ids)
+        direction = -angular_vel * dt
+        direction = -direction + np.pi if direction > 0 else -np.pi - direction
+
         distance = heading_vel * dt
         # mouse movement noise is implemented in "distance" which is to be included in "u"
         # velocity of the mouse which is considered to be a vector composed of "distance" and "direction"
@@ -755,7 +755,7 @@ class ParticleFilter:
         self.predict(u)
 
         self.landmark_detected(measured_ids)
-        self.update(z=measured_distances, R=10)
+        self.update(z=measured_distances, R=50)
 
         indexes = self.systematic_resample()
         self.resample_from_index(indexes)
@@ -781,29 +781,27 @@ class ParticleFilter:
         self.particles[:, 1] = uniform(self.y_range[0], self.y_range[1], size=len(self.particles))
         self.particles[:, 2] = uniform(-np.pi, np.pi, size=self.particles_num)
 
-    # def predict(self, d, dtheta, dt=1):
-    #     self.particles[:, 0] += np.cos(u[0]) * ((u[1] * dt + np.random.normal(0.1, 5, self.particles_num)))
-    #     self.particles[:, 1] += np.sin(u[0]) * ((u[1] * dt + np.random.normal(0.1, 5, self.particles_num)))
-    #
-    #     self.particles[:, 0] += (d * np.cos(yaw_setpoint) + np.random.normal(self.translation_model[0], self.translation_model[1],
-    #                                                   self.num_of_particles))
-    #     self.particles[:, 1] += (d * np.sin(yaw_setpoint)+ np.random.normal(self.translation_model[0], self.translation_model[1],
-    #                                                   self.num_of_particles))
+    def predict(self, u, dt=1, yaw_setpoint=np.pi/2):
 
-    def predict(self, u, dt=1, yaw_setpoint=np.pi):
         direction, distance = u
-        # self.particles[:, 0] += distance * np.cos(direction) + np.random.normal(0, std_dev, self.particles_num)
-        # self.particles[:, 1] += distance * np.sin(direction) + np.random.normal(0, std_dev, self.particles_num)
-        # self.particles[:, 2] += direction + np.random.normal(0, std_dev, self.particles_num)
+        std_dev = 0.2
+        self.particles[:, 0] += distance * np.cos(direction) + np.random.normal(0, std_dev, self.particles_num)
+        self.particles[:, 1] += distance * np.sin(direction) + np.random.normal(0, std_dev, self.particles_num)
+        self.particles[:, 2] += direction + np.random.normal(0, std_dev, self.particles_num)
 
-        self.particles[:, 0] += (distance * np.cos(yaw_setpoint) + np.random.normal(self.translation_model[0],
-                                                                                    self.translation_model[1],
-                                                                                    self.particles_num))
-        self.particles[:, 1] += (distance * np.sin(yaw_setpoint) + np.random.normal(self.translation_model[0],
-                                                                                    self.translation_model[1],
-                                                                                    self.particles_num))
-        self.particles[:, 2] += direction + np.random.normal(self.rotation_model[0], self.rotation_model[1],
-                                                             self.particles_num)
+
+        # # self.particles[:, 0] += distance * np.cos(direction) + np.random.normal(0, std_dev, self.particles_num)
+        # # self.particles[:, 1] += distance * np.sin(direction) + np.random.normal(0, std_dev, self.particles_num)
+        # # self.particles[:, 2] += direction + np.random.normal(0, std_dev, self.particles_num)
+        #
+        # self.particles[:, 0] += (distance * np.cos(yaw_setpoint) + np.random.normal(self.translation_model[0],
+        #                                                                             self.translation_model[1],
+        #                                                                             self.particles_num))
+        # self.particles[:, 1] += (distance * np.sin(yaw_setpoint) + np.random.normal(self.translation_model[0],
+        #                                                                             self.translation_model[1],
+        #                                                                             self.particles_num))
+        # self.particles[:, 2] += direction + np.random.normal(self.rotation_model[0], self.rotation_model[1],
+        #                                                      self.particles_num)
 
         # Ensure particles stay within bounds
         self.particles[:, 0] = np.clip(self.particles[:, 0], self.x_range[0], self.x_range[1])
@@ -1199,12 +1197,12 @@ try:
             if state_machine.state == StateMachine.states['LOCALIZE']:
                 ######### PASS res_frontend['measurements'] to state estimation
                 # localize the robot
-                if res_frontend['measurements'] is not None:
+                if len(list(res_frontend['measurements'].values()))>=0 or all([value is not None for value in res_frontend['measurements'].values()])==False:
                     state_estimator.particle_filter_update(heading_vel=vel,
                                                            angular_vel=theta,
                                                            measurements=res_frontend['measurements'],
                                                            dt=dt)
-                # print("Estimated Pose: {}, {}, {}".format(state_estimator.X, state_estimator.Y, state_estimator.Theta))
+                print("Estimated Pose: {}, {}, {}".format(state_estimator.X, state_estimator.Y, state_estimator.Theta))
                 state_machine.state_transition()
 
             if state_machine.state == StateMachine.states['PLAN']:
@@ -1212,10 +1210,11 @@ try:
                 # plan the path
                 vel, theta = planner.run(state_estimator.X+58, state_estimator.Y+117.5)
                 # vel = max([0.5, vel])
-                state_estimator.particle_filter_update(heading_vel=vel,
-                                                       angular_vel=-theta,
-                                                       measurements=res_frontend['measurements'],
-                                                       dt=dt)
+                if len(list(res_frontend['measurements'].values()))>=0 or all([value is not None for value in res_frontend['measurements'].values()])==False:
+                    state_estimator.particle_filter_update(heading_vel=vel,
+                                                           angular_vel=theta,
+                                                           measurements=res_frontend['measurements'],
+                                                           dt=dt)
                 # plot the x and y
                 # plot a fixed size window
                 # plt.scatter(state_estimator.X, state_estimator.Y)
