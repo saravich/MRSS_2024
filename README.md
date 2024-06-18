@@ -18,3 +18,10 @@ The competition was divided into three tires:
 
 
 
+# Kudos to the team members:
+- [Sara Hatami Gazani](https://github.com/saravich)
+- [gthanks](https://github.com/gthanks)
+- [rdesbiens-ets](https://github.com/rdesbiens-ets)
+- [viciopoli01](https://github.com/viciopoli01)
+
+# [Kudos to all the organizers of the Montreal Robotics Summer School 2024](https://fracturedplane.notion.site/Montreal-Robotics-Summer-School-2024-e01bf81f99b54d65834f1e915df645b3)
