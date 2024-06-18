@@ -48,20 +48,6 @@ def send(sock, x, y, r):
         sock.sendall(data)
 
 
-# ----------
-# https://github.com/m-lundberg/simple-pid/blob/master/simple_pid/pid.py#L99
-
-def _clamp(value, limits):
-    lower, upper = limits
-    if value is None:
-        return None
-    elif (upper is not None) and (value > upper):
-        return upper
-    elif (lower is not None) and (value < lower):
-        return lower
-    return value
-
-
 # ---------- HELPING FUNCTIONS
 
 MIN_OBS_DISTANCE = 0.5  # meters
@@ -112,7 +98,7 @@ class Fronted():
         "4": [2.93, 0.],
         "5": [2.03, -1.175],
         "6": [0.32, -1.175]
-    }  # TODO whats the unit of the values?
+    }  # in meters
 
     def __init__(self):
         # Fisheye camera (distortion_model: narrow_stereo):
@@ -180,6 +166,7 @@ class Fronted():
         self.normalized_depth_directions = []
 
     def map_augmenter(self):
+        # augment the apriltag landmarks with the pseudo landmarks
         apriltag_size_half = 0.075
         # augment the map with pseudo landmarks that are 10 cm away from the real landmarks
         self.map_landmarks["1_1"] = [self.map_landmarks["1"][0], self.map_landmarks["1"][0] + apriltag_size_half]
@@ -212,11 +199,11 @@ class Fronted():
         frames = self.pipeline.wait_for_frames()
 
         # Align the depth frame to color frame
-        # aligned_frames = self.align.process(frames)
+        aligned_frames = self.align.process(frames)
 
         # read the frames
-        self.depth_frame = frames.get_depth_frame()
-        self.color_frame = frames.get_color_frame()
+        self.depth_frame = aligned_frames.get_depth_frame()
+        self.color_frame = aligned_frames.get_color_frame()
 
         # Validate that both frames are valid
         if not self.depth_frame or not self.color_frame:
@@ -380,8 +367,18 @@ class Fronted():
     def stop(self):
         self.pipeline.stop()
 
-
 # ------ PID CLASS
+# https://github.com/m-lundberg/simple-pid/
+
+def _clamp(value, limits):
+    lower, upper = limits
+    if value is None:
+        return None
+    elif (upper is not None) and (value > upper):
+        return upper
+    elif (lower is not None) and (value < lower):
+        return lower
+    return value
 
 class PID(object):
     """A simple PID controller."""
@@ -622,7 +619,6 @@ class PID(object):
     def reset(self):
         self._last_input = None
 
-
 # ------ CONTROLLER CLASS
 
 class Controller:
@@ -691,7 +687,6 @@ class Controller:
         u_theta = self.controller_theta(error_theta, dt)
         u_v = self.controller_vel(error_x, dt)
         return u_v, u_theta
-
 
 # ------- STATE ESTIMATOR
 class ParticleFilter:
@@ -872,7 +867,6 @@ class ParticleFilter:
             # Retrieve the pose using the index
             pose = self.landmarks_dict['pose'][index]
             self.landmarks.append(pose)
-
 
 # ------ PLANNER CLASS
 
@@ -1093,7 +1087,6 @@ class Planner:
                 miniy = iny
         return p, minix, miniy
 
-
 # ------ STATE MACHINE
 
 class StateMachine:
@@ -1127,7 +1120,6 @@ class StateMachine:
 
     def reset(self):
         self.state = -1
-
 
 # ----------- DO NOT CHANGE THIS PART -----------
 
