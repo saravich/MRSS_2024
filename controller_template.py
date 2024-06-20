@@ -11,7 +11,7 @@ import cv2
 import pyrealsense2 as rs
 
 
-CONNECT_SERVER = False  # False for local tests, True for deployment
+CONNECT_SERVER = True  # False for local tests, True for deployment
 
 
 # ----------- DO NOT CHANGE THIS PART -----------
@@ -40,12 +40,13 @@ def send(sock, x, y, r):
     :param y: side velocity (between -1 and 1)
     :param r: yaw rate (between -1 and 1)
     """
+    code = 1  # 1 for velocity commands
     data = struct.pack('<hfff', code, x, y, r)
     if sock is not None:
         sock.sendall(data)
 
-# ----------
-# https://github.com/m-lundberg/simple-pid/blob/master/simple_pid/pid.py#L99
+# ---------- PID CONTROLLER ----------
+# Source: https://github.com/m-lundberg/simple-pid/
 
 def _clamp(value, limits):
     lower, upper = limits
@@ -297,35 +298,67 @@ class PID(object):
     def reset(self):
         self._last_input = None
 
-# ----------
+# ---------- END PID CONTROLLER ----------
 
-# Motion priority:
+# Motion priors:
 
 def spin(s, speed):
     """
-    Spin the robot in place.
+    Rotate the robot in place.
 
     :param direction: 1 for clockwise, -1 for counterclockwise
     :param speed: speed of the rotation (between 0 and 1)
     """
     send(s, 0., 0., speed)
 
-def go_back(s, a):
+def go_backward(s, a):
     """
-    Move the robot backwards.
+    Move the robot backward.
     """
-    send(s, -1.0*a, 0., 0.)
+    send(s, -a, 0., 0.)
 
-def move_forward(s, x, r):
+def go_forward(s, a):
     """
     Move the robot forward.
 
     :param x: forward velocity (between -1 and 1)
-    :param y: side velocity (between -1 and 1)
     """
-    send(s, x, 0., r)
+    send(s, a, 0., 0.)
+
+def move(s, a, r):
+    """
+    Move the robot forward or backward and rotate it.
+
+    :param a: forward velocity (between -1 and 1)
+    :param r: angular velocity (between -1 and 1)
+    """
+    send(s, a, 0., r)
+
 # ----------
 
+# ---------- HELPERS FUNCTIONS ----------
+
+def find_segments(arr):
+    """Function to find segments of contiguous ones"""
+    segments = []
+    start = None
+    for i, val in enumerate(arr):
+        if val == 1 and start is None:
+            start = i
+        elif val == 0 and start is not None:
+            segments.append((start, i - 1))
+            start = None
+    if start is not None:
+        segments.append((start, len(arr) - 1))
+    return segments
+
+def segment_length(segment):
+    """Function to calculate the length of a segment"""
+    return segment[1] - segment[0] + 1
+
+def midpoint(segment):
+    """Function to calculate the midpoint of a segment"""
+    return (segment[0] + segment[1]) / 2
 
 # Fisheye camera (distortion_model: narrow_stereo):
 
@@ -368,7 +401,6 @@ pipeline.start(config)
 
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
 
-
 arucoParams = cv2.aruco.DetectorParameters_create()
 arucoParams.markerBorderBits = 1
 
@@ -377,10 +409,10 @@ history = []
 
 # ----------------- CONTROLLER -----------------
 
-
 align_to = rs.stream.color
 align = rs.align(align_to)
 GOAL_REACHED = False
+
 try:
     # We create a TCP socket to talk to the Jetson at IP 192.168.123.14, which runs our walking policy:
 
@@ -393,13 +425,11 @@ try:
         else:
             s = None
 
-        code = 1  # 1 for velocity commands
-
         task_complete = False
         start_time = time.time()
         previous_time_stamp = start_time
 
-        controller = PID(
+        controller_theta = PID(
             Kp=1.0, Ki=0.05, Kd=0.05,
             setpoint=0, #  image_width / 2,
             sample_time=MIN_LOOP_DURATION,
@@ -412,8 +442,8 @@ try:
             starting_output=0
         )
 
-        controller_vel=PID(
-            Kp=1.0, Ki=0.01, Kd=0.08,
+        controller_vel = PID(
+            Kp=1.5, Ki=0.01, Kd=0.08,
             setpoint=-0.5,
             sample_time=MIN_LOOP_DURATION,
             output_limits = [-1,1],
@@ -423,7 +453,6 @@ try:
             error_map=None,
             time_fn=None,
             starting_output=0
-
         )
 
         # main control loop:
@@ -458,59 +487,56 @@ try:
             depth_image = np.asanyarray(depth_frame.get_data())
             color_image = np.asanyarray(color_frame.get_data())
 
-            # depth_image = cv2.medianBlur(depth_image, 5)
-            # avg of the depth image
-            depth_full_mean = np.mean(depth_image)
             # remove the measurement farther than 2.5m
             depth_image[depth_image > 2500] = 2500.
 
-            # crop a square in the center of the depth image
-            depth_image_center = depth_image[280:, :]
+            # crop a square in the center of the depth image (480x640)
+            depth_image_center = depth_image[200:280, 280:360]
 
-            # normalize the depth image
-            # depth_center_mean = (depth_center_mean- np.min(depth_image_center))/(np.max(depth_image_center) - np.min(depth_image_center))
+            # compute the mean value of the center of the depth image
             depth_center_mean = np.mean(depth_image_center)
 
-            # crop an horizontal strip of the depth image image_height = 480
+            # THE PID with setpoint -0.5 should already be able to keep the robot at a distance of 50 cm from the wall
+            # # if the robot is too close to the wall (<50 cm), go back
+            # if depth_center_mean < 500.:
+            #     depth_center = 0
+            #     go_backward(s, 1.)
+            #     continue
+
+            # crop an horizontal strip of the bottom part of depth image
+            # given the setup of the arena, we want to avoid the robot 
+            # to see outside its boundaries
             depth_image_crop = depth_image[280:, :]
 
-            depth_crop_mean_ = np.median(depth_image_crop, axis=0)
+            # compute the mean value ove the y-axis of the cropped depth image
+            # this will give us an idea of the depth in front of the robot
+            depth_crop_strip = np.mean(depth_image_crop, axis=0)
 
-            # threshold the depth image according to the mean value
-            depth_crop_mean_[depth_crop_mean_ < depth_center_mean] = 0
-            depth_crop_mean_[depth_crop_mean_ >= depth_center_mean] = 1
+            # compute the median value of the perceived depth
+            median_depth = np.median(depth_crop_mean)
 
-            # get a centroid of the depth image
-            depth_center = np.mean(np.where(depth_crop_mean_ == 1)[0])
+            # threshold the depth image according to the median value
+            depth_crop_strip[depth_crop_strip < median_depth] = 0
+            depth_crop_strip[depth_crop_strip >= median_depth] = 1
 
-            # center the depth center
-            depth_center = depth_center - 320
+            # compute the part of the image where the robot can move
+            # i.e. the part where the depth is greater than the median value
+            segments = find_segments(depth_crop_strip)
 
-            if np.isnan(depth_center):
-                depth_center = 0
-
-            if depth_center_mean / 1000. < 0.5:
-                depth_center = 0
-                COUNTING_BACK=+1
-                go_back(s,COUNTING_BACK/3)
-                continue
-            COUNTING_BACK=0
-
-            normalized_depth_center = depth_center / 320.0
-
-            angular_output_cmd = controller(normalized_depth_center, dt)
-            # print(f"Angular output: {angular_output_cmd}")
-
-            linear_vel=controller_vel(-depth_center_mean, dt)
-
-            move_forward(s, 0.5, angular_output_cmd)
-
-
-            # --------------- CHANGE THIS PART ---------------
-
+            # compute the center of the longest segment
+            if segments:
+                segment = max(segments, key=segment_length)
+                depth_center = midpoint(segment)
+                # center the depth_center in the depth image
+                depth_center -= image_width / 2.
+                # normalize the depth_center according to the image width
+                theta_value = depth_center/ ((image_width / 2.) / 2.)
+            else:
+                theta_value = 0
+            
             # --- Detect markers ---
 
-            # Markersangular_output_cmd detection:
+            # Markers angular_output_cmd detection:
             grey_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
             (detected_corners, detected_ids, rejected) = cv2.aruco.detectMarkers(grey_frame, aruco_dict, parameters=arucoParams)
 
@@ -518,29 +544,42 @@ try:
             linear_vel=0
             if detected_ids is not None:
                 for i, id_ in enumerate(detected_ids):
-                    if id_!=6:
+                    # we are interested in markers 1, 2 and 6, as they are close to the goal position
+                    if id_!=6 or id_!=1 or id_!=2:
                         continue
-                    # estimate depth as a median value of the values of the corners
+
+                    # estimate the distance from the marker
                     int_corners = detected_corners[i][0].astype(int)
-                    depth_estimate_mm = np.median(depth_image[int_corners[:, 1], int_corners[:, 0]])
+                    depth_estimate_mm = np.mean(depth_image[int_corners[:, 1], int_corners[:, 0]])
                     depth_estimate = depth_estimate_mm / 1000.
+
+                    # compute the center of the marker in the image
                     landmark_center = detected_corners[i][0][0] + (detected_corners[i][0][2] - detected_corners[i][0][0]) / 2.
                     landmark_center = landmark_center.astype(int)
                     x = landmark_center[0]
 
-                    angular_output_cmd = controller(x, dt)
-                    linear_vel=controller_vel(-depth_estimate,dt)
-                    print(f"Depth estimate: {depth_estimate} m")
-                    if depth_estimate < 0.5:
+                    # keep into account the obstacles before seeking the marker
+                    if np.sign(theta_value) == np.sign(x):
+                        theta_value = max(abs(theta_value), x) * np.sign(theta_value)
+                    
+                    print(f"Following marker {id_} at x={x}")
+                    if depth_estimate < 0.6:
                         print("GOAL REACHED")
                         GOAL_REACHED = True
+                        send(s, 0., 0., 0.)
+                        break
 
 
+            # compute the angular output command
+            angular_output_cmd = controller_theta(theta_value, dt)
+
+            # compute the linear velocity command
+            # the higher the depth, the higher the velocity
+            linear_vel=controller_vel(-depth_center_mean, dt)
+
+            move(s, linear_vel, angular_output_cmd)
             #--- Compute control ---
 
-            # x_velocity = 0.0
-            # y_velocity = 0.0
-            # r_velocity = 0.0
         print(f"End of main loop.")
 
         if RECORD:
